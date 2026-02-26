@@ -104,6 +104,100 @@ app.get('/admin/', (c) => {
 // Admin API routes
 app.route('/', admin);
 
+// ── Synapse Admin SPA ────────────────────────────────────────────────────────
+// Serve the pre-built Synapse Admin UI at /synapse-admin/
+// In Cloudflare Workers mode: files are served via Workers Static Assets
+// In self-hosted (Bun) mode: files are served from the filesystem
+
+const SYNAPSE_ADMIN_MIME: Record<string, string> = {
+  '.html': 'text/html',
+  '.js': 'application/javascript',
+  '.css': 'text/css',
+  '.json': 'application/json',
+  '.ico': 'image/x-icon',
+  '.png': 'image/png',
+  '.svg': 'image/svg+xml',
+  '.webp': 'image/webp',
+  '.txt': 'text/plain',
+  '.webmanifest': 'application/manifest+json',
+};
+
+function getMimeType(path: string): string {
+  const ext = path.substring(path.lastIndexOf('.'));
+  return SYNAPSE_ADMIN_MIME[ext] || 'application/octet-stream';
+}
+
+async function serveSynapseAdminFile(c: any, filePath: string): Promise<Response | null> {
+  // Default to index.html for the root or SPA routes (no file extension)
+  if (!filePath || !filePath.includes('.')) {
+    filePath = 'index.html';
+  }
+
+  // Try to serve from filesystem (self-hosted / Bun mode)
+  try {
+    if ('Bun' in globalThis) {
+      // Use process.cwd() for reliable path resolution
+      const fsPath = `${process.cwd()}/public/synapse-admin/${filePath}`;
+      const file = (globalThis as any).Bun.file(fsPath);
+      if (await file.exists()) {
+        return new Response(file.stream(), {
+          headers: {
+            'Content-Type': getMimeType(filePath),
+            'Cache-Control': filePath === 'index.html' ? 'no-cache' : 'public, max-age=31536000, immutable',
+          },
+        });
+      }
+    }
+  } catch {
+    // Not running in Bun — fall through
+  }
+
+  // Cloudflare Workers Static Assets mode
+  if ((c.env as any).ASSETS) {
+    try {
+      const assetUrl = new URL(`/synapse-admin/${filePath}`, c.req.url);
+      const response = await (c.env as any).ASSETS.fetch(new Request(assetUrl));
+      if (response.ok) {
+        return new Response(response.body, {
+          headers: {
+            'Content-Type': getMimeType(filePath),
+            'Cache-Control': filePath === 'index.html' ? 'no-cache' : 'public, max-age=31536000, immutable',
+          },
+        });
+      }
+    } catch {
+      // Asset not found
+    }
+  }
+
+  return null;
+}
+
+// Redirect /synapse-admin to /synapse-admin/
+app.get('/synapse-admin', (c) => c.redirect('/synapse-admin/', 301));
+
+// Serve /synapse-admin/ (root)
+app.get('/synapse-admin/', async (c) => {
+  const response = await serveSynapseAdminFile(c, 'index.html');
+  if (response) return response;
+  return c.json({ error: 'Synapse Admin files not found. Check public/synapse-admin/ directory.' }, 404);
+});
+
+// Serve /synapse-admin/* (sub-paths: assets, images, config, etc.)
+app.get('/synapse-admin/:path{.+}', async (c) => {
+  const filePath = c.req.param('path');
+  const response = await serveSynapseAdminFile(c, filePath);
+  if (response) return response;
+
+  // SPA fallback: serve index.html for routes without file extensions
+  if (!filePath.includes('.')) {
+    const indexResponse = await serveSynapseAdminFile(c, 'index.html');
+    if (indexResponse) return indexResponse;
+  }
+
+  return c.json({ error: 'Not found' }, 404);
+});
+
 // QR code login landing page - commented out, requires MSC4108/OIDC for Element X
 // app.route('/', qrLogin);
 

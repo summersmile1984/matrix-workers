@@ -35,7 +35,7 @@ interface StateEventValidation {
   error?: string;
 }
 
-function validateStateEvent(event: any, index: number): StateEventValidation {
+function validateStateEvent(event: any, index: number, env?: AppEnv['Bindings']): StateEventValidation {
   // Must be an object
   if (!event || typeof event !== 'object') {
     return { valid: false, error: `initial_state[${index}]: must be an object` };
@@ -64,6 +64,11 @@ function validateStateEvent(event: any, index: number): StateEventValidation {
 
   // Validate m.room.encryption content
   if (event.type === 'm.room.encryption') {
+    // Check if E2EE is disabled server-wide
+    if (env && env.ALLOW_E2EE === 'false') {
+      return { valid: false, error: `initial_state[${index}]: End-to-end encryption is disabled on this server` };
+    }
+
     if (!event.content.algorithm || typeof event.content.algorithm !== 'string') {
       return { valid: false, error: `initial_state[${index}]: m.room.encryption requires 'algorithm'` };
     }
@@ -289,7 +294,7 @@ app.post('/_matrix/client/v3/createRoom', requireAuth(), async (c) => {
 
     // Validate each state event
     for (let i = 0; i < initial_state.length; i++) {
-      const validation = validateStateEvent(initial_state[i], i);
+      const validation = validateStateEvent(initial_state[i], i, c.env);
       if (!validation.valid) {
         return c.json({
           errcode: 'M_INVALID_PARAM',
@@ -781,6 +786,14 @@ app.put('/_matrix/client/v3/rooms/:roomId/state/:eventType/:stateKey?', requireA
     return Errors.forbidden('Not a member of this room').toResponse();
   }
 
+  // Reject enabling E2EE if configured to do so
+  if (eventType === 'm.room.encryption' && c.env.ALLOW_E2EE === 'false') {
+    return c.json({
+      errcode: 'M_FORBIDDEN',
+      error: 'End-to-end encryption is disabled on this server',
+    }, 403);
+  }
+
   let content: any;
   try {
     content = await c.req.json();
@@ -820,7 +833,7 @@ app.put('/_matrix/client/v3/rooms/:roomId/state/:eventType/:stateKey?', requireA
   const CACHED_STATE_TYPES = ['m.room.name', 'm.room.avatar', 'm.room.topic', 'm.room.canonical_alias', 'm.room.member'];
   if (CACHED_STATE_TYPES.includes(eventType)) {
     // Non-blocking cache invalidation
-    invalidateRoomCache(c.env.CACHE, roomId).catch(() => {});
+    invalidateRoomCache(c.env.CACHE, roomId).catch(() => { });
   }
 
   // Update membership table if this is a membership event

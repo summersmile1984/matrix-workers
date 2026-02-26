@@ -1822,6 +1822,551 @@ app.get('/_matrix/client/v3/admin/whois/:userId', requireAuth(), async (c) => {
 });
 
 // ============================================
+// Additional Synapse-Compatible Admin API Routes
+// Required by Synapse Admin UI (etkecc fork)
+// ============================================
+
+// GET /_synapse/admin/v1/users/:userId/joined_rooms - List user's rooms
+app.get('/_synapse/admin/v1/users/:userId/joined_rooms', requireAuth(), requireAdmin, async (c) => {
+  const userId = decodeURIComponent(c.req.param('userId'));
+  const db = c.env.DB;
+
+  const rooms = await db.prepare(`
+    SELECT rm.room_id FROM room_memberships rm
+    WHERE rm.user_id = ? AND rm.membership = 'join'
+    ORDER BY rm.room_id
+  `).bind(userId).all<{ room_id: string }>();
+
+  return c.json({
+    joined_rooms: rooms.results.map(r => r.room_id),
+    total: rooms.results.length,
+  });
+});
+
+// GET /_synapse/admin/v1/rooms/:roomId/members - List room members
+app.get('/_synapse/admin/v1/rooms/:roomId/members', requireAuth(), requireAdmin, async (c) => {
+  const roomId = decodeURIComponent(c.req.param('roomId'));
+  const db = c.env.DB;
+
+  const members = await db.prepare(`
+    SELECT rm.user_id, rm.membership, u.display_name as displayname, u.avatar_url
+    FROM room_memberships rm
+    LEFT JOIN users u ON rm.user_id = u.user_id
+    WHERE rm.room_id = ?
+    ORDER BY rm.user_id
+  `).bind(roomId).all<{
+    user_id: string;
+    membership: string;
+    displayname: string | null;
+    avatar_url: string | null;
+  }>();
+
+  return c.json({
+    members: members.results,
+    total: members.results.length,
+  });
+});
+
+// GET /_synapse/admin/v1/rooms/:roomId/state - Room state events
+app.get('/_synapse/admin/v1/rooms/:roomId/state', requireAuth(), requireAdmin, async (c) => {
+  const roomId = decodeURIComponent(c.req.param('roomId'));
+  const db = c.env.DB;
+
+  const state = await db.prepare(`
+    SELECT e.event_id, e.event_type as type, rs.state_key, e.sender, e.content, e.origin_server_ts
+    FROM room_state rs
+    JOIN events e ON rs.event_id = e.event_id
+    WHERE rs.room_id = ?
+    ORDER BY e.origin_server_ts
+  `).bind(roomId).all<{
+    event_id: string;
+    type: string;
+    state_key: string;
+    sender: string;
+    content: string;
+    origin_server_ts: number;
+  }>();
+
+  return c.json({
+    state: state.results.map(s => ({
+      type: s.type,
+      state_key: s.state_key,
+      sender: s.sender,
+      content: JSON.parse(s.content),
+      origin_server_ts: s.origin_server_ts,
+      event_id: s.event_id,
+    })),
+  });
+});
+
+// POST /_synapse/admin/v1/rooms/:roomId/delete - Delete room (POST variant, used by Synapse Admin)
+app.post('/_synapse/admin/v1/rooms/:roomId/delete', requireAuth(), requireAdmin, async (c) => {
+  const roomId = decodeURIComponent(c.req.param('roomId'));
+  const db = c.env.DB;
+
+  const room = await db.prepare('SELECT room_id FROM rooms WHERE room_id = ?').bind(roomId).first();
+  if (!room) {
+    return Errors.notFound('Room not found').toResponse();
+  }
+
+  // Delete in order
+  await db.prepare('DELETE FROM room_aliases WHERE room_id = ?').bind(roomId).run();
+  await db.prepare('DELETE FROM room_memberships WHERE room_id = ?').bind(roomId).run();
+  await db.prepare('DELETE FROM room_state WHERE room_id = ?').bind(roomId).run();
+  await db.prepare('DELETE FROM events WHERE room_id = ?').bind(roomId).run();
+  await db.prepare('DELETE FROM rooms WHERE room_id = ?').bind(roomId).run();
+
+  await invalidateStatsCache(c.env);
+
+  return c.json({
+    kicked_users: [],
+    failed_to_kick_users: [],
+    local_aliases: [],
+    new_room_id: null,
+  });
+});
+
+// GET /_synapse/admin/v1/media/:serverName/:mediaId - Get media details
+app.get('/_synapse/admin/v1/media/:serverName/:mediaId', requireAuth(), requireAdmin, async (c) => {
+  const mediaId = c.req.param('mediaId');
+  const db = c.env.DB;
+
+  const media = await db.prepare(`
+    SELECT media_id, user_id, content_type, content_length, filename, created_at
+    FROM media WHERE media_id = ?
+  `).bind(mediaId).first();
+
+  if (!media) {
+    return Errors.notFound('Media not found').toResponse();
+  }
+
+  return c.json(media);
+});
+
+// DELETE /_synapse/admin/v1/media/:serverName/:mediaId - Delete media
+app.delete('/_synapse/admin/v1/media/:serverName/:mediaId', requireAuth(), requireAdmin, async (c) => {
+  const mediaId = c.req.param('mediaId');
+  const db = c.env.DB;
+
+  const media = await db.prepare('SELECT media_id FROM media WHERE media_id = ?').bind(mediaId).first();
+  if (!media) {
+    return Errors.notFound('Media not found').toResponse();
+  }
+
+  // Delete from R2 (if available)
+  try {
+    await c.env.MEDIA?.delete(mediaId);
+  } catch {
+    // Media storage may not be available
+  }
+
+  // Delete from DB
+  await db.prepare('DELETE FROM media WHERE media_id = ?').bind(mediaId).run();
+
+  return c.json({ deleted_media: 1, total: 1 });
+});
+
+// GET /_synapse/admin/v1/users/:userId/media - List media uploaded by user
+app.get('/_synapse/admin/v1/users/:userId/media', requireAuth(), requireAdmin, async (c) => {
+  const userId = decodeURIComponent(c.req.param('userId'));
+  const db = c.env.DB;
+  const limit = Math.min(parseInt(c.req.query('limit') || '100'), 500);
+  const from = parseInt(c.req.query('from') || '0');
+
+  const media = await db.prepare(`
+    SELECT media_id, content_type, content_length, filename, created_at
+    FROM media WHERE user_id = ?
+    ORDER BY created_at DESC
+    LIMIT ? OFFSET ?
+  `).bind(userId, limit, from).all();
+
+  const total = await db.prepare('SELECT COUNT(*) as count FROM media WHERE user_id = ?')
+    .bind(userId).first<{ count: number }>();
+
+  return c.json({
+    media: media.results,
+    total: total?.count || 0,
+    next_token: from + limit < (total?.count || 0) ? String(from + limit) : undefined,
+  });
+});
+
+// POST /_synapse/admin/v1/users/:userId/media/delete - Delete all media uploaded by user
+app.post('/_synapse/admin/v1/users/:userId/media/delete', requireAuth(), requireAdmin, async (c) => {
+  const userId = decodeURIComponent(c.req.param('userId'));
+  const db = c.env.DB;
+
+  // Get all media IDs for the user
+  const media = await db.prepare('SELECT media_id FROM media WHERE user_id = ?').bind(userId).all<{ media_id: string }>();
+
+  let deleted = 0;
+  for (const m of media.results) {
+    try {
+      await c.env.MEDIA?.delete(m.media_id);
+    } catch { /* ignore */ }
+    deleted++;
+  }
+
+  // Delete from DB
+  await db.prepare('DELETE FROM media WHERE user_id = ?').bind(userId).run();
+
+  return c.json({ deleted_media: deleted, total: deleted });
+});
+
+// GET /_synapse/admin/v1/rooms/:roomId/messages - Room messages (for room detail view)
+app.get('/_synapse/admin/v1/rooms/:roomId/messages', requireAuth(), requireAdmin, async (c) => {
+  const roomId = decodeURIComponent(c.req.param('roomId'));
+  const db = c.env.DB;
+  const limit = Math.min(parseInt(c.req.query('limit') || '100'), 500);
+  const from = c.req.query('from') || '0';
+  const dir = c.req.query('dir') === 'f' ? 'ASC' : 'DESC';
+
+  const events = await db.prepare(`
+    SELECT event_id, event_type as type, sender, content, origin_server_ts, state_key
+    FROM events WHERE room_id = ?
+    ORDER BY origin_server_ts ${dir}
+    LIMIT ? OFFSET ?
+  `).bind(roomId, limit, parseInt(from)).all<{
+    event_id: string;
+    type: string;
+    sender: string;
+    content: string;
+    origin_server_ts: number;
+    state_key: string | null;
+  }>();
+
+  return c.json({
+    chunk: events.results.map(e => ({
+      event_id: e.event_id,
+      type: e.type,
+      sender: e.sender,
+      content: JSON.parse(e.content),
+      origin_server_ts: e.origin_server_ts,
+      room_id: roomId,
+      state_key: e.state_key,
+    })),
+    start: from,
+    end: String(parseInt(from) + events.results.length),
+  });
+});
+
+// GET /_synapse/admin/v1/registration_tokens - List registration tokens
+app.get('/_synapse/admin/v1/registration_tokens', requireAuth(), requireAdmin, async (c) => {
+  const db = c.env.DB;
+  // Check if registration_tokens table exists
+  try {
+    const tokens = await db.prepare(`
+      SELECT token, uses_allowed, pending, completed, expiry_time
+      FROM registration_tokens
+      ORDER BY rowid DESC
+    `).all();
+    return c.json({ registration_tokens: tokens.results });
+  } catch {
+    // Table may not exist
+    return c.json({ registration_tokens: [] });
+  }
+});
+
+// POST /_synapse/admin/v1/registration_tokens/new - Create registration token
+app.post('/_synapse/admin/v1/registration_tokens/new', requireAuth(), requireAdmin, async (c) => {
+  const db = c.env.DB;
+  let body: any;
+  try { body = await c.req.json(); } catch { return Errors.badJson().toResponse(); }
+
+  const token = body.token || crypto.randomUUID().replace(/-/g, '').substring(0, 16);
+  const usesAllowed = body.uses_allowed ?? null;
+  const expiryTime = body.expiry_time ?? null;
+
+  try {
+    await db.prepare(`
+      CREATE TABLE IF NOT EXISTS registration_tokens (
+        token TEXT PRIMARY KEY,
+        uses_allowed INTEGER,
+        pending INTEGER DEFAULT 0,
+        completed INTEGER DEFAULT 0,
+        expiry_time INTEGER
+      )
+    `).run();
+
+    await db.prepare(`
+      INSERT INTO registration_tokens (token, uses_allowed, expiry_time)
+      VALUES (?, ?, ?)
+    `).bind(token, usesAllowed, expiryTime).run();
+  } catch (err: any) {
+    return c.json({ errcode: 'M_UNKNOWN', error: err?.message || 'Failed to create token' }, 400);
+  }
+
+  return c.json({ token, uses_allowed: usesAllowed, pending: 0, completed: 0, expiry_time: expiryTime });
+});
+
+// GET /_synapse/admin/v1/registration_tokens/:token - Get token details
+app.get('/_synapse/admin/v1/registration_tokens/:token', requireAuth(), requireAdmin, async (c) => {
+  const db = c.env.DB;
+  const token = c.req.param('token');
+  try {
+    const row = await db.prepare('SELECT * FROM registration_tokens WHERE token = ?').bind(token).first();
+    if (!row) return Errors.notFound('Token not found').toResponse();
+    return c.json(row);
+  } catch {
+    return Errors.notFound('Token not found').toResponse();
+  }
+});
+
+// PUT /_synapse/admin/v1/registration_tokens/:token - Update token
+app.put('/_synapse/admin/v1/registration_tokens/:token', requireAuth(), requireAdmin, async (c) => {
+  const db = c.env.DB;
+  const token = c.req.param('token');
+  let body: any;
+  try { body = await c.req.json(); } catch { return Errors.badJson().toResponse(); }
+
+  const updates: string[] = [];
+  const params: any[] = [];
+  if (body.uses_allowed !== undefined) { updates.push('uses_allowed = ?'); params.push(body.uses_allowed); }
+  if (body.expiry_time !== undefined) { updates.push('expiry_time = ?'); params.push(body.expiry_time); }
+
+  if (updates.length > 0) {
+    params.push(token);
+    await db.prepare(`UPDATE registration_tokens SET ${updates.join(', ')} WHERE token = ?`).bind(...params).run();
+  }
+
+  const row = await db.prepare('SELECT * FROM registration_tokens WHERE token = ?').bind(token).first();
+  return c.json(row || {});
+});
+
+// DELETE /_synapse/admin/v1/registration_tokens/:token - Delete token
+app.delete('/_synapse/admin/v1/registration_tokens/:token', requireAuth(), requireAdmin, async (c) => {
+  const db = c.env.DB;
+  const token = c.req.param('token');
+  await db.prepare('DELETE FROM registration_tokens WHERE token = ?').bind(token).run();
+  return c.json({});
+});
+
+// POST /_synapse/admin/v1/users/:userId/login - Login as user (get access token)
+app.post('/_synapse/admin/v1/users/:userId/login', requireAuth(), requireAdmin, async (c) => {
+  const userId = decodeURIComponent(c.req.param('userId'));
+  const db = c.env.DB;
+
+  const user = await db.prepare('SELECT user_id FROM users WHERE user_id = ?').bind(userId).first();
+  if (!user) return Errors.notFound('User not found').toResponse();
+
+  // Generate a temporary access token for the target user
+  const accessToken = `syt_${crypto.randomUUID().replace(/-/g, '')}`;
+  const deviceId = `ADMIN_${Date.now()}`;
+
+  await db.prepare(`
+    INSERT INTO access_tokens (token, user_id, device_id, created_at)
+    VALUES (?, ?, ?, ?)
+  `).bind(accessToken, userId, deviceId, Date.now()).run();
+
+  // Create device entry
+  await db.prepare(`
+    INSERT OR IGNORE INTO devices (user_id, device_id, display_name, created_at)
+    VALUES (?, ?, ?, ?)
+  `).bind(userId, deviceId, 'Admin Login', Date.now()).run();
+
+  return c.json({ access_token: accessToken });
+});
+
+// POST /_synapse/admin/v1/media/quarantine/:serverName/:mediaId - Quarantine media
+app.post('/_synapse/admin/v1/media/quarantine/:serverName/:mediaId', requireAuth(), requireAdmin, async (c) => {
+  const mediaId = c.req.param('mediaId');
+  const db = c.env.DB;
+
+  try {
+    await db.prepare(`
+      UPDATE media SET quarantined = 1 WHERE media_id = ?
+    `).bind(mediaId).run();
+  } catch {
+    // quarantined column may not exist, add it
+    try {
+      await db.prepare('ALTER TABLE media ADD COLUMN quarantined INTEGER DEFAULT 0').run();
+      await db.prepare('UPDATE media SET quarantined = 1 WHERE media_id = ?').bind(mediaId).run();
+    } catch { /* ignore */ }
+  }
+
+  return c.json({});
+});
+
+// POST /_synapse/admin/v1/media/unquarantine/:serverName/:mediaId - Unquarantine media
+app.post('/_synapse/admin/v1/media/unquarantine/:serverName/:mediaId', requireAuth(), requireAdmin, async (c) => {
+  const mediaId = c.req.param('mediaId');
+  const db = c.env.DB;
+
+  try {
+    await db.prepare('UPDATE media SET quarantined = 0 WHERE media_id = ?').bind(mediaId).run();
+  } catch { /* quarantined column may not exist */ }
+
+  return c.json({});
+});
+
+// POST /_synapse/admin/v1/media/protect/:serverName/:mediaId - Protect media from quarantine
+app.post('/_synapse/admin/v1/media/protect/:serverName/:mediaId', requireAuth(), requireAdmin, async (c) => {
+  const mediaId = c.req.param('mediaId');
+  const db = c.env.DB;
+
+  try {
+    await db.prepare('UPDATE media SET protected = 1 WHERE media_id = ?').bind(mediaId).run();
+  } catch {
+    try {
+      await db.prepare('ALTER TABLE media ADD COLUMN protected INTEGER DEFAULT 0').run();
+      await db.prepare('UPDATE media SET protected = 1 WHERE media_id = ?').bind(mediaId).run();
+    } catch { /* ignore */ }
+  }
+
+  return c.json({});
+});
+
+// POST /_synapse/admin/v1/media/unprotect/:serverName/:mediaId - Unprotect media
+app.post('/_synapse/admin/v1/media/unprotect/:serverName/:mediaId', requireAuth(), requireAdmin, async (c) => {
+  const mediaId = c.req.param('mediaId');
+  const db = c.env.DB;
+
+  try {
+    await db.prepare('UPDATE media SET protected = 0 WHERE media_id = ?').bind(mediaId).run();
+  } catch { /* ignore */ }
+
+  return c.json({});
+});
+
+// GET /_synapse/admin/v1/room/:roomId/media - List media in a room
+app.get('/_synapse/admin/v1/room/:roomId/media', requireAuth(), requireAdmin, async (c) => {
+  const roomId = decodeURIComponent(c.req.param('roomId'));
+  const db = c.env.DB;
+
+  // Find media referenced in room events (mxc:// URLs in content)
+  const events = await db.prepare(`
+    SELECT content FROM events
+    WHERE room_id = ? AND event_type IN ('m.room.message', 'm.room.avatar', 'm.sticker')
+  `).bind(roomId).all<{ content: string }>();
+
+  const mediaIds: string[] = [];
+
+  for (const evt of events.results) {
+    try {
+      const content = JSON.parse(evt.content);
+      // Extract mxc:// URLs from content
+      const urls = [content.url, content.thumbnail_url, content.info?.thumbnail_url].filter(Boolean);
+      for (const url of urls) {
+        if (typeof url === 'string' && url.startsWith('mxc://')) {
+          const parts = url.replace('mxc://', '').split('/');
+          if (parts.length === 2) {
+            mediaIds.push(parts[1]);
+          }
+        }
+      }
+    } catch { /* parse error */ }
+  }
+
+  // Deduplicate
+  const uniqueMediaIds = [...new Set(mediaIds)];
+
+  return c.json({
+    local: uniqueMediaIds,
+    remote: [],
+  });
+});
+
+// POST /_synapse/admin/v1/join/:roomId - Admin force-join user to room
+app.post('/_synapse/admin/v1/join/:roomId', requireAuth(), requireAdmin, async (c) => {
+  const roomId = decodeURIComponent(c.req.param('roomId'));
+  const db = c.env.DB;
+
+  let body: any;
+  try { body = await c.req.json(); } catch { return Errors.badJson().toResponse(); }
+
+  const userId = body.user_id;
+  if (!userId) return Errors.missingParam('user_id').toResponse();
+
+  // Check room exists
+  const room = await db.prepare('SELECT room_id FROM rooms WHERE room_id = ?').bind(roomId).first();
+  if (!room) return Errors.notFound('Room not found').toResponse();
+
+  // Join the user
+  await db.prepare(`
+    INSERT OR REPLACE INTO room_memberships (room_id, user_id, membership, event_id)
+    VALUES (?, ?, 'join', ?)
+  `).bind(roomId, userId, `\$admin_join_${Date.now()}`).run();
+
+  return c.json({ room_id: roomId });
+});
+
+// GET /_synapse/admin/v2/users/:userId/devices - List user devices
+app.get('/_synapse/admin/v2/users/:userId/devices', requireAuth(), requireAdmin, async (c) => {
+  const userId = decodeURIComponent(c.req.param('userId'));
+  const db = c.env.DB;
+
+  const devices = await db.prepare(`
+    SELECT device_id, display_name, last_seen_ts as last_seen_ts, last_seen_ip
+    FROM devices WHERE user_id = ?
+    ORDER BY device_id
+  `).bind(userId).all();
+
+  return c.json({
+    devices: devices.results,
+    total: devices.results.length,
+  });
+});
+
+// DELETE /_synapse/admin/v2/users/:userId/devices/:deviceId - Delete user device
+app.delete('/_synapse/admin/v2/users/:userId/devices/:deviceId', requireAuth(), requireAdmin, async (c) => {
+  const userId = decodeURIComponent(c.req.param('userId'));
+  const deviceId = c.req.param('deviceId');
+  const db = c.env.DB;
+
+  // Delete device
+  await db.prepare('DELETE FROM devices WHERE user_id = ? AND device_id = ?').bind(userId, deviceId).run();
+  // Revoke associated access tokens
+  await db.prepare('DELETE FROM access_tokens WHERE user_id = ? AND device_id = ?').bind(userId, deviceId).run();
+
+  return c.json({});
+});
+
+// POST /_synapse/admin/v1/room/:roomId/media/quarantine - Quarantine all media in room
+app.post('/_synapse/admin/v1/room/:roomId/media/quarantine', requireAuth(), requireAdmin, async (c) => {
+  const roomId = decodeURIComponent(c.req.param('roomId'));
+  const db = c.env.DB;
+
+  // Find media in room events
+  const events = await db.prepare(`
+    SELECT content FROM events
+    WHERE room_id = ? AND event_type IN ('m.room.message', 'm.room.avatar', 'm.sticker')
+  `).bind(roomId).all<{ content: string }>();
+
+  let quarantined = 0;
+  for (const evt of events.results) {
+    try {
+      const content = JSON.parse(evt.content);
+      const urls = [content.url, content.thumbnail_url].filter(Boolean);
+      for (const url of urls) {
+        if (typeof url === 'string' && url.startsWith('mxc://')) {
+          const mediaId = url.replace('mxc://', '').split('/')[1];
+          if (mediaId) {
+            try {
+              await db.prepare('UPDATE media SET quarantined = 1 WHERE media_id = ?').bind(mediaId).run();
+              quarantined++;
+            } catch { /* ignore */ }
+          }
+        }
+      }
+    } catch { /* ignore */ }
+  }
+
+  return c.json({ num_quarantined: quarantined });
+});
+
+// POST /_synapse/admin/v1/users/:userId/media/quarantine - Quarantine all media by user
+app.post('/_synapse/admin/v1/users/:userId/media/quarantine', requireAuth(), requireAdmin, async (c) => {
+  const userId = decodeURIComponent(c.req.param('userId'));
+  const db = c.env.DB;
+
+  try {
+    const result = await db.prepare('UPDATE media SET quarantined = 1 WHERE user_id = ?').bind(userId).run();
+    return c.json({ num_quarantined: result.meta?.changes || 0 });
+  } catch {
+    return c.json({ num_quarantined: 0 });
+  }
+});
+
+// ============================================
 // Synapse-Compatible Admin API Routes
 // These routes provide compatibility with Synapse admin tools
 // ============================================

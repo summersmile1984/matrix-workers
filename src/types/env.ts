@@ -33,6 +33,10 @@ export interface Env {
   ADMIN_CONTACT_MXID?: string;
   SUPPORT_PAGE_URL?: string;
 
+  // Features
+  ALLOW_E2EE?: string;            // Default: "true"
+  MAX_UPLOAD_SIZE_MB?: string;    // Default: "50"
+
   // Secrets (to be configured)
   SIGNING_KEY?: string;
 

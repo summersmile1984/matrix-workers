@@ -9,8 +9,16 @@ import { validateUrlForPreview } from '../utils/url-validator';
 
 const app = new Hono<AppEnv>();
 
-// Maximum upload size (50MB)
-const MAX_UPLOAD_SIZE = 50 * 1024 * 1024;
+// Maximum upload size helper (evaluated per request to support env override)
+const getMaxUploadSize = (env: AppEnv['Bindings']) => {
+  if (env.MAX_UPLOAD_SIZE_MB) {
+    const mb = parseInt(env.MAX_UPLOAD_SIZE_MB);
+    if (!isNaN(mb) && mb > 0) {
+      return mb * 1024 * 1024;
+    }
+  }
+  return 50 * 1024 * 1024; // Default: 50MB
+};
 
 // Supported MIME types (used for validation in future)
 export const SUPPORTED_TYPES = [
@@ -41,7 +49,8 @@ app.post('/_matrix/media/v3/upload', requireAuth(), async (c) => {
 
   // Check content length
   const contentLength = parseInt(c.req.header('Content-Length') || '0');
-  if (contentLength > MAX_UPLOAD_SIZE) {
+  const maxUploadSize = getMaxUploadSize(c.env);
+  if (contentLength > maxUploadSize) {
     return Errors.tooLarge('File exceeds maximum upload size').toResponse();
   }
 
@@ -325,7 +334,7 @@ app.get('/_matrix/media/v3/preview_url', requireAuth(), async (c) => {
 
     // Extract og:title
     const ogTitle = html.match(/<meta[^>]*property=["']og:title["'][^>]*content=["']([^"']*)["'][^>]*>/i) ||
-                   html.match(/<meta[^>]*content=["']([^"']*)["'][^>]*property=["']og:title["'][^>]*>/i);
+      html.match(/<meta[^>]*content=["']([^"']*)["'][^>]*property=["']og:title["'][^>]*>/i);
     if (ogTitle) {
       preview['og:title'] = decodeHtmlEntities(ogTitle[1]);
     } else {
@@ -338,13 +347,13 @@ app.get('/_matrix/media/v3/preview_url', requireAuth(), async (c) => {
 
     // Extract og:description
     const ogDesc = html.match(/<meta[^>]*property=["']og:description["'][^>]*content=["']([^"']*)["'][^>]*>/i) ||
-                  html.match(/<meta[^>]*content=["']([^"']*)["'][^>]*property=["']og:description["'][^>]*>/i);
+      html.match(/<meta[^>]*content=["']([^"']*)["'][^>]*property=["']og:description["'][^>]*>/i);
     if (ogDesc) {
       preview['og:description'] = decodeHtmlEntities(ogDesc[1]);
     } else {
       // Fallback to meta description
       const metaDesc = html.match(/<meta[^>]*name=["']description["'][^>]*content=["']([^"']*)["'][^>]*>/i) ||
-                      html.match(/<meta[^>]*content=["']([^"']*)["'][^>]*name=["']description["'][^>]*>/i);
+        html.match(/<meta[^>]*content=["']([^"']*)["'][^>]*name=["']description["'][^>]*>/i);
       if (metaDesc) {
         preview['og:description'] = decodeHtmlEntities(metaDesc[1]);
       }
@@ -352,7 +361,7 @@ app.get('/_matrix/media/v3/preview_url', requireAuth(), async (c) => {
 
     // Extract og:image
     const ogImage = html.match(/<meta[^>]*property=["']og:image["'][^>]*content=["']([^"']*)["'][^>]*>/i) ||
-                   html.match(/<meta[^>]*content=["']([^"']*)["'][^>]*property=["']og:image["'][^>]*>/i);
+      html.match(/<meta[^>]*content=["']([^"']*)["'][^>]*property=["']og:image["'][^>]*>/i);
     if (ogImage) {
       let imageUrl = ogImage[1];
       // Convert relative URLs to absolute
@@ -366,14 +375,14 @@ app.get('/_matrix/media/v3/preview_url', requireAuth(), async (c) => {
 
     // Extract og:site_name
     const ogSiteName = html.match(/<meta[^>]*property=["']og:site_name["'][^>]*content=["']([^"']*)["'][^>]*>/i) ||
-                      html.match(/<meta[^>]*content=["']([^"']*)["'][^>]*property=["']og:site_name["'][^>]*>/i);
+      html.match(/<meta[^>]*content=["']([^"']*)["'][^>]*property=["']og:site_name["'][^>]*>/i);
     if (ogSiteName) {
       preview['og:site_name'] = decodeHtmlEntities(ogSiteName[1]);
     }
 
     // Extract og:type
     const ogType = html.match(/<meta[^>]*property=["']og:type["'][^>]*content=["']([^"']*)["'][^>]*>/i) ||
-                  html.match(/<meta[^>]*content=["']([^"']*)["'][^>]*property=["']og:type["'][^>]*>/i);
+      html.match(/<meta[^>]*content=["']([^"']*)["'][^>]*property=["']og:type["'][^>]*>/i);
     if (ogType) {
       preview['og:type'] = ogType[1];
     }
@@ -410,7 +419,7 @@ function decodeHtmlEntities(text: string): string {
 // GET /_matrix/media/v3/config - Get media config
 app.get('/_matrix/media/v3/config', async (c) => {
   return c.json({
-    'm.upload.size': MAX_UPLOAD_SIZE,
+    'm.upload.size': getMaxUploadSize(c.env),
   });
 });
 
@@ -427,7 +436,8 @@ app.post('/_matrix/client/v1/media/upload', requireAuth(), async (c) => {
   const filename = c.req.query('filename');
 
   const contentLength = parseInt(c.req.header('Content-Length') || '0');
-  if (contentLength > MAX_UPLOAD_SIZE) {
+  const maxUploadSize = getMaxUploadSize(c.env);
+  if (contentLength > maxUploadSize) {
     return Errors.tooLarge('File exceeds maximum upload size').toResponse();
   }
 
@@ -728,7 +738,7 @@ app.get('/_matrix/client/v1/media/preview_url', requireAuth(), async (c) => {
     const preview: Record<string, any> = {};
 
     const ogTitle = html.match(/<meta[^>]*property=["']og:title["'][^>]*content=["']([^"']*)["'][^>]*>/i) ||
-                   html.match(/<meta[^>]*content=["']([^"']*)["'][^>]*property=["']og:title["'][^>]*>/i);
+      html.match(/<meta[^>]*content=["']([^"']*)["'][^>]*property=["']og:title["'][^>]*>/i);
     if (ogTitle) {
       preview['og:title'] = decodeHtmlEntities(ogTitle[1]);
     } else {
@@ -739,13 +749,13 @@ app.get('/_matrix/client/v1/media/preview_url', requireAuth(), async (c) => {
     }
 
     const ogDesc = html.match(/<meta[^>]*property=["']og:description["'][^>]*content=["']([^"']*)["'][^>]*>/i) ||
-                  html.match(/<meta[^>]*content=["']([^"']*)["'][^>]*property=["']og:description["'][^>]*>/i);
+      html.match(/<meta[^>]*content=["']([^"']*)["'][^>]*property=["']og:description["'][^>]*>/i);
     if (ogDesc) {
       preview['og:description'] = decodeHtmlEntities(ogDesc[1]);
     }
 
     const ogImage = html.match(/<meta[^>]*property=["']og:image["'][^>]*content=["']([^"']*)["'][^>]*>/i) ||
-                   html.match(/<meta[^>]*content=["']([^"']*)["'][^>]*property=["']og:image["'][^>]*>/i);
+      html.match(/<meta[^>]*content=["']([^"']*)["'][^>]*property=["']og:image["'][^>]*>/i);
     if (ogImage) {
       let imageUrl = ogImage[1];
       if (imageUrl.startsWith('/')) {
@@ -770,7 +780,7 @@ app.get('/_matrix/client/v1/media/preview_url', requireAuth(), async (c) => {
 // GET /_matrix/client/v1/media/config - Authenticated media config
 app.get('/_matrix/client/v1/media/config', requireAuth(), async (c) => {
   return c.json({
-    'm.upload.size': MAX_UPLOAD_SIZE,
+    'm.upload.size': getMaxUploadSize(c.env),
   });
 });
 

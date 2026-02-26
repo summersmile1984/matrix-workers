@@ -63,6 +63,34 @@ npx wrangler secret put EMAIL_FROM
 # Example: noreply@m.easydemo.org
 ```
 
+## Configuration
+
+The following environment variables can be set in `wrangler.jsonc` under `vars`, or via `npx wrangler secret put` for sensitive values:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SERVER_NAME` | — | **Required.** Your server's domain name (e.g., `m.easydemo.org`) |
+| `SERVER_VERSION` | `0.1.0` | Server version string reported to clients and federation |
+| `MAX_UPLOAD_SIZE_MB` | `50` | Maximum file upload size in megabytes |
+| `ALLOW_E2EE` | `false` | Whether to allow end-to-end encryption. Set to `"true"` to enable |
+| `TURN_KEY_ID` | — | Cloudflare TURN server key ID (for voice/video) |
+| `LIVEKIT_API_KEY` | — | LiveKit API key (for MatrixRTC video calls) |
+| `LIVEKIT_URL` | — | LiveKit WebSocket URL for clients (e.g., `wss://livekit.example.com`) |
+
+**Secrets** (set via `npx wrangler secret put <NAME>`):
+
+| Secret | Description |
+|--------|-------------|
+| `TURN_API_TOKEN` | Cloudflare TURN server API token |
+| `LIVEKIT_API_SECRET` | LiveKit API secret |
+| `CALLS_APP_ID` | Cloudflare Calls SFU App ID |
+| `CALLS_APP_SECRET` | Cloudflare Calls SFU App secret |
+| `EMAIL_FROM` | From address for email verification (e.g., `noreply@m.easydemo.org`) |
+| `APNS_KEY_ID` | Apple Push Notification key ID |
+| `APNS_TEAM_ID` | Apple Developer Team ID |
+| `APNS_PRIVATE_KEY` | Contents of the `.p8` private key file |
+| `APNS_ENVIRONMENT` | `"production"` or `"sandbox"` (default: production) |
+
 ## Spec Compliance
 
 **[Matrix Specification v1.17](https://spec.matrix.org/v1.17/) Compliance**
