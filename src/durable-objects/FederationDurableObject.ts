@@ -1,6 +1,6 @@
 // Federation Durable Object for server-to-server communication
 
-import { DurableObject } from 'cloudflare:workers';
+import { DurableObject } from '../shims/cloudflare-workers';
 import type { Env } from '../types';
 
 interface FederationTarget {

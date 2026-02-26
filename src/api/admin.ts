@@ -736,7 +736,7 @@ app.delete('/admin/api/users/:userId/purge', requireAuth(), requireAdmin, async 
   await db.prepare('DELETE FROM presence WHERE user_id = ?').bind(userId).run();
   await db.prepare('DELETE FROM push_rules WHERE user_id = ?').bind(userId).run();
   await db.prepare('DELETE FROM sync_tokens WHERE user_id = ?').bind(userId).run();
-  
+
   // E2EE & device keys
   await db.prepare('DELETE FROM cross_signing_keys WHERE user_id = ?').bind(userId).run();
   await db.prepare('DELETE FROM cross_signing_signatures WHERE user_id = ? OR signer_user_id = ?').bind(userId, userId).run();
@@ -745,24 +745,24 @@ app.delete('/admin/api/users/:userId/purge', requireAuth(), requireAdmin, async 
   await db.prepare('DELETE FROM device_key_changes WHERE user_id = ?').bind(userId).run();
   await db.prepare('DELETE FROM key_backup_keys WHERE user_id = ?').bind(userId).run();
   await db.prepare('DELETE FROM key_backup_versions WHERE user_id = ?').bind(userId).run();
-  
+
   // Messaging
   await db.prepare('DELETE FROM to_device_messages WHERE recipient_user_id = ? OR sender_user_id = ?').bind(userId, userId).run();
   await db.prepare('DELETE FROM pushers WHERE user_id = ?').bind(userId).run();
   await db.prepare('DELETE FROM notification_queue WHERE user_id = ?').bind(userId).run();
   await db.prepare('DELETE FROM transaction_ids WHERE user_id = ?').bind(userId).run();
-  
+
   // Room participation
   await db.prepare('DELETE FROM receipts WHERE user_id = ?').bind(userId).run();
   await db.prepare('DELETE FROM typing WHERE user_id = ?').bind(userId).run();
   await db.prepare('DELETE FROM room_memberships WHERE user_id = ?').bind(userId).run();
-  
+
   // Identity & auth
   await db.prepare('DELETE FROM user_threepids WHERE user_id = ?').bind(userId).run();
   await db.prepare('DELETE FROM idp_user_links WHERE user_id = ?').bind(userId).run();
   await db.prepare('DELETE FROM access_tokens WHERE user_id = ?').bind(userId).run();
   await db.prepare('DELETE FROM devices WHERE user_id = ?').bind(userId).run();
-  
+
   // Finally delete the user
   await db.prepare('DELETE FROM users WHERE user_id = ?').bind(userId).run();
 
@@ -818,7 +818,7 @@ app.post('/admin/api/users/bulk-delete', requireAuth(), requireAdmin, async (c) 
   for (const userId of user_ids) {
     // Get devices BEFORE deleting (for KV cleanup)
     const devices = await db.prepare('SELECT device_id FROM devices WHERE user_id = ?').bind(userId).all<{ device_id: string }>();
-    
+
     // Delete media BEFORE user (FK constraint without CASCADE)
     const media = await db.prepare('SELECT media_id FROM media WHERE user_id = ?').bind(userId).all<{ media_id: string }>();
     for (const m of media.results) {
@@ -830,14 +830,14 @@ app.post('/admin/api/users/bulk-delete', requireAuth(), requireAdmin, async (c) 
     }
     await db.prepare('DELETE FROM thumbnails WHERE media_id IN (SELECT media_id FROM media WHERE user_id = ?)').bind(userId).run();
     await db.prepare('DELETE FROM media WHERE user_id = ?').bind(userId).run();
-    
+
     // Account & profile data
     await db.prepare('DELETE FROM account_data WHERE user_id = ?').bind(userId).run();
     await db.prepare('DELETE FROM account_data_changes WHERE user_id = ?').bind(userId).run();
     await db.prepare('DELETE FROM presence WHERE user_id = ?').bind(userId).run();
     await db.prepare('DELETE FROM push_rules WHERE user_id = ?').bind(userId).run();
     await db.prepare('DELETE FROM sync_tokens WHERE user_id = ?').bind(userId).run();
-    
+
     // E2EE & device keys
     await db.prepare('DELETE FROM cross_signing_keys WHERE user_id = ?').bind(userId).run();
     await db.prepare('DELETE FROM cross_signing_signatures WHERE user_id = ? OR signer_user_id = ?').bind(userId, userId).run();
@@ -846,24 +846,24 @@ app.post('/admin/api/users/bulk-delete', requireAuth(), requireAdmin, async (c) 
     await db.prepare('DELETE FROM device_key_changes WHERE user_id = ?').bind(userId).run();
     await db.prepare('DELETE FROM key_backup_keys WHERE user_id = ?').bind(userId).run();
     await db.prepare('DELETE FROM key_backup_versions WHERE user_id = ?').bind(userId).run();
-    
+
     // Messaging
     await db.prepare('DELETE FROM to_device_messages WHERE recipient_user_id = ? OR sender_user_id = ?').bind(userId, userId).run();
     await db.prepare('DELETE FROM pushers WHERE user_id = ?').bind(userId).run();
     await db.prepare('DELETE FROM notification_queue WHERE user_id = ?').bind(userId).run();
     await db.prepare('DELETE FROM transaction_ids WHERE user_id = ?').bind(userId).run();
-    
+
     // Room participation
     await db.prepare('DELETE FROM receipts WHERE user_id = ?').bind(userId).run();
     await db.prepare('DELETE FROM typing WHERE user_id = ?').bind(userId).run();
     await db.prepare('DELETE FROM room_memberships WHERE user_id = ?').bind(userId).run();
-    
+
     // Identity & auth
     await db.prepare('DELETE FROM user_threepids WHERE user_id = ?').bind(userId).run();
     await db.prepare('DELETE FROM idp_user_links WHERE user_id = ?').bind(userId).run();
     await db.prepare('DELETE FROM access_tokens WHERE user_id = ?').bind(userId).run();
     await db.prepare('DELETE FROM devices WHERE user_id = ?').bind(userId).run();
-    
+
     // Finally delete the user
     await db.prepare('DELETE FROM users WHERE user_id = ?').bind(userId).run();
 
@@ -873,7 +873,7 @@ app.post('/admin/api/users/bulk-delete', requireAuth(), requireAdmin, async (c) 
     }
     // Cross-signing keys stored as user:{userId} in keys.ts
     await c.env.CROSS_SIGNING_KEYS.delete(`user:${userId}`);
-    
+
     deleted++;
   }
 
@@ -906,7 +906,7 @@ app.post('/admin/api/cleanup', requireAuth(), requireAdmin, async (c) => {
     await db.prepare('DELETE FROM presence WHERE user_id = ?').bind(userId).run();
     await db.prepare('DELETE FROM push_rules WHERE user_id = ?').bind(userId).run();
     await db.prepare('DELETE FROM sync_tokens WHERE user_id = ?').bind(userId).run();
-    
+
     // E2EE & device keys
     await db.prepare('DELETE FROM cross_signing_keys WHERE user_id = ?').bind(userId).run();
     await db.prepare('DELETE FROM cross_signing_signatures WHERE user_id = ? OR signer_user_id = ?').bind(userId, userId).run();
@@ -915,24 +915,24 @@ app.post('/admin/api/cleanup', requireAuth(), requireAdmin, async (c) => {
     await db.prepare('DELETE FROM device_key_changes WHERE user_id = ?').bind(userId).run();
     await db.prepare('DELETE FROM key_backup_keys WHERE user_id = ?').bind(userId).run();
     await db.prepare('DELETE FROM key_backup_versions WHERE user_id = ?').bind(userId).run();
-    
+
     // Messaging
     await db.prepare('DELETE FROM to_device_messages WHERE recipient_user_id = ? OR sender_user_id = ?').bind(userId, userId).run();
     await db.prepare('DELETE FROM pushers WHERE user_id = ?').bind(userId).run();
     await db.prepare('DELETE FROM notification_queue WHERE user_id = ?').bind(userId).run();
     await db.prepare('DELETE FROM transaction_ids WHERE user_id = ?').bind(userId).run();
-    
+
     // Room participation
     await db.prepare('DELETE FROM receipts WHERE user_id = ?').bind(userId).run();
     await db.prepare('DELETE FROM typing WHERE user_id = ?').bind(userId).run();
     await db.prepare('DELETE FROM room_memberships WHERE user_id = ?').bind(userId).run();
-    
+
     // Identity & auth
     await db.prepare('DELETE FROM user_threepids WHERE user_id = ?').bind(userId).run();
     await db.prepare('DELETE FROM idp_user_links WHERE user_id = ?').bind(userId).run();
     await db.prepare('DELETE FROM access_tokens WHERE user_id = ?').bind(userId).run();
     await db.prepare('DELETE FROM devices WHERE user_id = ?').bind(userId).run();
-    
+
     // Finally delete the user
     await db.prepare('DELETE FROM users WHERE user_id = ?').bind(userId).run();
 
@@ -965,8 +965,8 @@ app.post('/admin/api/cleanup', requireAuth(), requireAdmin, async (c) => {
   // Invalidate stats cache
   await invalidateStatsCache(c.env);
 
-  return c.json({ 
-    success: true, 
+  return c.json({
+    success: true,
     users_deleted: userIds.length,
     rooms_deleted: true,
     media_deleted: media.results.length
@@ -1718,7 +1718,7 @@ app.get('/admin/api/users/:userId/keys', requireAuth(), requireAdmin, async (c) 
   // Verification status check
   const selfSigningKeyId = parsedCSKeys.self_signing?.key_id;
   const verificationStatus: Record<string, { verified: boolean; reason: string }> = {};
-  
+
   for (const device of devices.results) {
     const deviceId = device.device_id;
     const hasSelfSigningSignature = signatures.results.some(
@@ -1726,14 +1726,14 @@ app.get('/admin/api/users/:userId/keys', requireAuth(), requireAdmin, async (c) 
     );
     const deviceKey = deviceKeys[deviceId];
     const hasSignatureInDeviceKey = deviceKey?.signatures?.[userId]?.[selfSigningKeyId] !== undefined;
-    
+
     verificationStatus[deviceId] = {
       verified: hasSelfSigningSignature && hasSignatureInDeviceKey,
-      reason: !selfSigningKeyId 
-        ? 'No self-signing key' 
-        : !hasSelfSigningSignature 
-          ? 'No signature in DB' 
-          : !hasSignatureInDeviceKey 
+      reason: !selfSigningKeyId
+        ? 'No self-signing key'
+        : !hasSelfSigningSignature
+          ? 'No signature in DB'
+          : !hasSignatureInDeviceKey
             ? 'Signature not in device key object'
             : 'Verified',
     };
@@ -1794,13 +1794,15 @@ app.get('/_matrix/client/v3/admin/whois/:userId', requireAuth(), async (c) => {
   }>();
 
   // Build devices map in Matrix spec format
-  const devicesMap: Record<string, { sessions: Array<{
-    connections: Array<{
-      ip: string | null;
-      last_seen: number | null;
-      user_agent?: string;
-    }>;
-  }> }> = {};
+  const devicesMap: Record<string, {
+    sessions: Array<{
+      connections: Array<{
+        ip: string | null;
+        last_seen: number | null;
+        user_agent?: string;
+      }>;
+    }>
+  }> = {};
 
   for (const device of devices.results) {
     devicesMap[device.device_id] = {
@@ -2425,4 +2427,101 @@ app.get('/_matrix/client/v3/admin/analytics/federation', requireAuth(), requireA
   });
 });
 
+// ============================================
+// LibSQL / Database Admin Endpoints
+// ============================================
+
+// GET /admin/api/sql/tables - List all tables in the database
+app.get('/admin/api/sql/tables', requireAuth(), requireAdmin, async (c) => {
+  const db = c.env.DB;
+  const tables = await db.prepare(
+    `SELECT name, type FROM sqlite_master WHERE type IN ('table','view') ORDER BY type, name`
+  ).all<{ name: string; type: string }>();
+
+  // Get row counts for each table
+  const withCounts = await Promise.all(
+    tables.results.map(async (t) => {
+      try {
+        const row = await db.prepare(`SELECT COUNT(*) as n FROM "${t.name}"`).first<{ n: number }>();
+        return { ...t, rows: row?.n ?? 0 };
+      } catch {
+        return { ...t, rows: null };
+      }
+    })
+  );
+
+  return c.json({ tables: withCounts });
+});
+
+// POST /admin/api/sql/schema - Get full schema (CREATE statements)
+app.post('/admin/api/sql/schema', requireAuth(), requireAdmin, async (c) => {
+  const db = c.env.DB;
+  let body: { table?: string } = {};
+  try { body = await c.req.json(); } catch { /* no body */ }
+
+  let query = `SELECT name, sql FROM sqlite_master WHERE type IN ('table','view','index')`;
+  const params: string[] = [];
+  if (body.table) {
+    query += ` AND name = ?`;
+    params.push(body.table);
+  }
+  query += ` ORDER BY type, name`;
+
+  const rows = await db.prepare(query).bind(...params).all<{ name: string; sql: string }>();
+  return c.json({ schema: rows.results });
+});
+
+// POST /admin/api/sql - Execute arbitrary SQL (admin only, read-only by default)
+app.post('/admin/api/sql', requireAuth(), requireAdmin, async (c) => {
+  let body: { sql: string; params?: unknown[]; write?: boolean };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'Invalid JSON body' }, 400);
+  }
+
+  const { sql, params = [], write = false } = body;
+
+  if (!sql || typeof sql !== 'string') {
+    return c.json({ error: 'sql field is required' }, 400);
+  }
+
+  // Safety: block dangerous operations unless write=true explicitly passed
+  const trimmed = sql.trim().toUpperCase();
+  const isDML = /^(INSERT|UPDATE|DELETE|DROP|CREATE|ALTER|TRUNCATE|REPLACE)\b/.test(trimmed);
+  if (isDML && !write) {
+    return c.json({
+      error: 'Write operation requires write:true in the request body. Be careful.',
+    }, 400);
+  }
+
+  const db = c.env.DB;
+  try {
+    const stmt = db.prepare(sql);
+    const bound = params.length > 0 ? stmt.bind(...(params as any[])) : stmt;
+
+    if (isDML) {
+      const result = await bound.run();
+      return c.json({
+        success: true,
+        rows_affected: result.meta?.changes ?? 0,
+        last_row_id: result.meta?.last_row_id ?? null,
+        columns: [],
+        rows: [],
+      });
+    } else {
+      const result = await bound.all<Record<string, unknown>>();
+      return c.json({
+        success: true,
+        columns: result.results.length > 0 ? Object.keys(result.results[0]) : [],
+        rows: result.results.map(r => Object.values(r)),
+        rows_affected: 0,
+      });
+    }
+  } catch (err: any) {
+    return c.json({ error: err?.message ?? String(err) }, 400);
+  }
+});
+
 export default app;
+

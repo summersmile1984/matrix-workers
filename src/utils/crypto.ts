@@ -86,27 +86,24 @@ export async function hashToken(token: string): Promise<string> {
   return sha256(token);
 }
 
-// Ed25519 algorithm parameters for Cloudflare Workers
-// Note: NODE-ED25519 is Cloudflare Workers' proprietary Ed25519 implementation
-interface Ed25519Params {
-  name: 'NODE-ED25519';
-  namedCurve: 'NODE-ED25519';
-}
+// Ed25519 algorithm name
+// 'Ed25519' is the standard Web Crypto API name (Bun, Node 22+, browsers)
+// Cloudflare Workers uses the alias 'NODE-ED25519' — both produce identical bytes
+const ED25519_ALG = 'Ed25519' as const;
 
 interface Ed25519KeyPair {
   publicKey: CryptoKey;
   privateKey: CryptoKey;
 }
 
-// Generate Ed25519 key pair for signing using Cloudflare Workers' NODE-ED25519 algorithm
+// Generate Ed25519 key pair for signing
 export async function generateSigningKeyPair(): Promise<{
   publicKey: string;
   privateKeyJwk: JsonWebKey;
   keyId: string;
 }> {
-  // Generate Ed25519 key pair using Cloudflare Workers' native support
   const keyPair = (await crypto.subtle.generateKey(
-    { name: 'NODE-ED25519', namedCurve: 'NODE-ED25519' } as Ed25519Params,
+    { name: ED25519_ALG },
     true, // extractable
     ['sign', 'verify']
   )) as Ed25519KeyPair;
@@ -169,7 +166,7 @@ export async function signJson(
   const privateKey = await crypto.subtle.importKey(
     'jwk',
     jwk,
-    { name: 'NODE-ED25519', namedCurve: 'NODE-ED25519' } as Ed25519Params,
+    { name: ED25519_ALG },
     false,
     ['sign']
   );
@@ -179,7 +176,7 @@ export async function signJson(
 
   // Sign the canonical JSON
   const signatureBytes = await crypto.subtle.sign(
-    { name: 'NODE-ED25519' },
+    { name: ED25519_ALG },
     privateKey,
     new TextEncoder().encode(canonical)
   );
@@ -229,7 +226,7 @@ export async function verifySignature(
     const publicKey = await crypto.subtle.importKey(
       'raw',
       publicKeyBytes,
-      { name: 'NODE-ED25519', namedCurve: 'NODE-ED25519' } as Ed25519Params,
+      { name: ED25519_ALG },
       false,
       ['verify']
     );
@@ -242,7 +239,7 @@ export async function verifySignature(
 
     // Verify the signature
     return await crypto.subtle.verify(
-      { name: 'NODE-ED25519' },
+      { name: ED25519_ALG },
       publicKey,
       signatureBytes,
       new TextEncoder().encode(canonical)
@@ -312,7 +309,7 @@ export function generateRandomString(length: number = 32): string {
   // 256 % 62 = 8, so we reject values >= 248 to ensure uniform distribution
   const maxValid = 256 - (256 % charsLen); // 248
   const result: string[] = [];
-  
+
   while (result.length < length) {
     const bytes = crypto.getRandomValues(new Uint8Array(length - result.length));
     for (const b of bytes) {
@@ -321,6 +318,6 @@ export function generateRandomString(length: number = 32): string {
       }
     }
   }
-  
+
   return result.join('');
 }

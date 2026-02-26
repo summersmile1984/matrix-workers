@@ -4,7 +4,7 @@
 // - Cached statistics (avoid D1 queries on every request)
 // - Active admin sessions for real-time notifications
 
-import { DurableObject } from 'cloudflare:workers';
+import { DurableObject } from '../shims/cloudflare-workers';
 import type { Env } from '../types';
 
 interface AdminSession {

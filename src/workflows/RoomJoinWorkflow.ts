@@ -6,7 +6,7 @@
 // - Batched member notifications
 // - Step persistence for resume on failure
 
-import { WorkflowEntrypoint, WorkflowEvent, WorkflowStep } from 'cloudflare:workers';
+import { WorkflowEntrypoint, WorkflowEvent, WorkflowStep } from '../shims/cloudflare-workers';
 import type { Env } from '../types';
 import { generateEventId } from '../utils/ids';
 import {

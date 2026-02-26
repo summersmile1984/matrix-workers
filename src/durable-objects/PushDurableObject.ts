@@ -1,7 +1,7 @@
 // Push Durable Object for direct APNs delivery
 // Bypasses Sygnal for full control over notification payload
 
-import { DurableObject } from 'cloudflare:workers';
+import { DurableObject } from '../shims/cloudflare-workers';
 import type { Env } from '../types';
 
 interface APNsNotification {

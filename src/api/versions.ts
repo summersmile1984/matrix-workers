@@ -5,10 +5,24 @@ import type { AppEnv } from '../types';
 
 const app = new Hono<AppEnv>();
 
+/** Derive the base URL from SERVER_NAME.
+ * localhost / IP addresses / names with an explicit port → http
+ * Everything else (production domains) → https
+ */
+function baseUrlFor(serverName: string): string {
+  const isLocal =
+    serverName.startsWith('localhost') ||
+    serverName.startsWith('127.') ||
+    serverName.startsWith('0.0.0.0') ||
+    /^\[?::1\]?/.test(serverName) ||
+    /:\d+$/.test(serverName); // any explicit port implies local/dev
+  return isLocal ? `http://${serverName}` : `https://${serverName}`;
+}
+
 // GET /.well-known/matrix/client
 app.get('/.well-known/matrix/client', (c) => {
   const serverName = c.env.SERVER_NAME;
-  const baseUrl = `https://${serverName}`;
+  const baseUrl = baseUrlFor(serverName);
 
   const response: Record<string, unknown> = {
     'm.homeserver': {
@@ -36,8 +50,12 @@ app.get('/.well-known/matrix/client', (c) => {
 // GET /.well-known/matrix/server
 app.get('/.well-known/matrix/server', (c) => {
   const serverName = c.env.SERVER_NAME;
+  // For local dev (already has port) just return as-is; for prod append :443
+  const isLocal = /:\d+$/.test(serverName) ||
+    serverName.startsWith('localhost') ||
+    serverName.startsWith('127.');
   return c.json({
-    'm.server': `${serverName}:443`,
+    'm.server': isLocal ? serverName : `${serverName}:443`,
   });
 });
 
@@ -46,7 +64,7 @@ app.get('/.well-known/matrix/server', (c) => {
 // See: https://spec.matrix.org/v1.17/client-server-api/#oauth-20-api
 app.get('/.well-known/openid-configuration', (c) => {
   const serverName = c.env.SERVER_NAME;
-  const baseUrl = `https://${serverName}`;
+  const baseUrl = baseUrlFor(serverName);
 
   // Return standard OIDC discovery document
   // Element Web requires all these fields to be present

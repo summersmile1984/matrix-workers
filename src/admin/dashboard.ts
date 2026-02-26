@@ -1475,6 +1475,9 @@ export const adminDashboardHtml = (serverName: string) => `
       <symbol id="icon-hard-drive" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <line x1="22" x2="2" y1="12" y2="12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/><line x1="6" x2="6.01" y1="16" y2="16"/><line x1="10" x2="10.01" y1="16" y2="16"/>
       </symbol>
+      <symbol id="icon-database" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/><path d="M3 12c0 1.66 4 3 9 3s9-1.34 9-3"/>
+      </symbol>
       <symbol id="icon-download" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/>
       </symbol>
@@ -1564,6 +1567,7 @@ export const adminDashboardHtml = (serverName: string) => `
         <a class="nav-item" data-page="federation"><svg class="icon"><use href="#icon-globe"/></svg><span>Federation</span></a>
         <a class="nav-item" data-page="idp"><svg class="icon"><use href="#icon-key"/></svg><span>Identity Providers</span></a>
         <a class="nav-item" data-page="config"><svg class="icon"><use href="#icon-settings"/></svg><span>Settings</span></a>
+        <a class="nav-item" data-page="database"><svg class="icon"><use href="#icon-database"/></svg><span>Database</span><span class="nav-shortcut">g d</span></a>
       </nav>
       <div class="user-info">
         <div style="font-weight: 500;" id="currentUserName">Admin</div>
@@ -1981,7 +1985,77 @@ export const adminDashboardHtml = (serverName: string) => `
           </div>
         </div>
       </section>
+
+      <!-- Database Page -->
+      <section id="page-database" class="page hidden">
+        <div class="header">
+          <h2><svg class="icon" style="margin-right:8px"><use href="#icon-database"/></svg>Database</h2>
+          <div class="header-actions">
+            <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text-secondary)">
+              <input type="checkbox" id="dbWriteMode" onchange="toggleDbWriteMode()">
+              <span>Write Mode</span>
+            </label>
+            <button class="btn btn-secondary" onclick="loadDbTables()"><svg class="icon"><use href="#icon-refresh-cw"/></svg> Refresh</button>
+          </div>
+        </div>
+
+        <div style="display:grid;grid-template-columns:240px 1fr;gap:16px;height:calc(100vh - 140px)">
+
+          <!-- Left: Table Browser -->
+          <div style="display:flex;flex-direction:column;gap:12px;overflow:hidden">
+            <div class="card" style="flex:1;overflow:hidden;display:flex;flex-direction:column">
+              <div class="card-header" style="padding:12px 16px">
+                <h3 style="font-size:13px;font-weight:600">Tables</h3>
+              </div>
+              <div id="dbTableList" style="overflow-y:auto;flex:1;padding:8px"></div>
+            </div>
+          </div>
+
+          <!-- Right: SQL Console + Results -->
+          <div style="display:flex;flex-direction:column;gap:12px;overflow:hidden;min-width:0">
+
+            <!-- SQL Editor -->
+            <div class="card">
+              <div class="card-header" style="padding:12px 16px">
+                <h3 style="font-size:13px;font-weight:600"><svg class="icon" style="margin-right:6px"><use href="#icon-file-text"/></svg>SQL Console</h3>
+                <div style="display:flex;gap:8px;align-items:center">
+                  <select id="dbQueryHistory" onchange="loadDbHistoryItem()" style="background:var(--bg-elevated);border:1px solid var(--border-default);color:var(--text-primary);border-radius:6px;padding:4px 8px;font-size:12px;max-width:180px">
+                    <option value="">— History —</option>
+                  </select>
+                  <button class="btn btn-secondary" style="font-size:12px;padding:4px 10px" onclick="dbFormatSql()">Format</button>
+                  <button class="btn btn-secondary" style="font-size:12px;padding:4px 10px" onclick="dbClearSql()">Clear</button>
+                  <button class="btn btn-primary" style="font-size:12px;padding:4px 14px" onclick="dbRunSql()">
+                    <svg class="icon"><use href="#icon-zap"/></svg> Run <kbd style="font-size:10px;background:rgba(255,255,255,0.1);border-radius:3px;padding:1px 4px">⌘↵</kbd>
+                  </button>
+                </div>
+              </div>
+              <div class="card-body" style="padding:0">
+                <textarea id="dbSqlEditor"
+                  style="width:100%;min-height:120px;max-height:240px;background:var(--bg-base);color:#e6edf3;font-family:'JetBrains Mono',Menlo,monospace;font-size:13px;line-height:1.6;padding:14px 16px;border:none;outline:none;resize:vertical;border-bottom:1px solid var(--border-subtle)"
+                  placeholder="SELECT * FROM users LIMIT 10;"
+                  onkeydown="handleDbEditorKey(event)"
+                  spellcheck="false"></textarea>
+              </div>
+            </div>
+
+            <!-- Results -->
+            <div class="card" style="flex:1;overflow:hidden;display:flex;flex-direction:column">
+              <div class="card-header" style="padding:12px 16px">
+                <h3 style="font-size:13px;font-weight:600" id="dbResultTitle">Results</h3>
+                <div style="display:flex;gap:8px">
+                  <button class="btn btn-secondary" style="font-size:12px;padding:4px 10px" onclick="dbExportCsv()">CSV</button>
+                  <button class="btn btn-secondary" style="font-size:12px;padding:4px 10px" onclick="dbExportJson()">JSON</button>
+                </div>
+              </div>
+              <div id="dbResultArea" style="flex:1;overflow:auto;padding:0"></div>
+            </div>
+
+          </div>
+        </div>
+      </section>
+
     </main>
+
   </div>
 
   <!-- Command Palette -->
@@ -4213,10 +4287,201 @@ export const adminDashboardHtml = (serverName: string) => `
             e.preventDefault();
             navigateTo('rooms');
             break;
+          case 'd': // g d - Database
+            e.preventDefault();
+            navigateTo('database');
+            break;
         }
       }
     });
+
+    // ══════════════════════════════════════════════════════════
+    // DATABASE TAB
+    // ══════════════════════════════════════════════════════════
+    let _dbLastResult = null; // { columns, rows }
+    let _dbWriteMode = false;
+    let _dbHistory = [];
+
+    function toggleDbWriteMode() {
+      _dbWriteMode = document.getElementById('dbWriteMode').checked;
+    }
+
+    async function loadDbTables() {
+      const listEl = document.getElementById('dbTableList');
+      listEl.innerHTML = '<div style="padding:8px;color:var(--text-secondary);font-size:12px">Loading...</div>';
+      try {
+        const { tables } = await api('/admin/api/sql/tables');
+        if (!tables.length) {
+          listEl.innerHTML = '<div style="padding:8px;color:var(--text-secondary);font-size:12px">No tables found</div>';
+          return;
+        }
+        listEl.innerHTML = tables.map(t => \`
+          <div style="margin-bottom:2px">
+            <button onclick="dbSelectTable('\${t.name}')"
+              style="width:100%;text-align:left;background:transparent;border:none;padding:7px 10px;border-radius:6px;cursor:pointer;font-size:12px;color:var(--text-primary);display:flex;justify-content:space-between;align-items:center;transition:background 0.15s"
+              onmouseover="this.style.background='var(--bg-hover)'"
+              onmouseout="this.style.background='transparent'">
+              <span style="display:flex;align-items:center;gap:6px">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--accent-blue)"><use href="#icon-database"/></svg>
+                \${t.name}
+              </span>
+              <span style="color:var(--text-secondary);font-size:10px">\${t.rows != null ? t.rows.toLocaleString() : '?'}</span>
+            </button>
+          </div>
+        \`).join('');
+      } catch (e) {
+        listEl.innerHTML = \`<div style="padding:8px;color:var(--accent-red);font-size:12px">Error: \${e.message}</div>\`;
+      }
+    }
+
+    function dbSelectTable(name) {
+      const editor = document.getElementById('dbSqlEditor');
+      editor.value = \`SELECT * FROM "\${name}" LIMIT 100;\`;
+      dbRunSql();
+    }
+
+    function handleDbEditorKey(e) {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+        e.preventDefault();
+        dbRunSql();
+      }
+      // Tab = 2 spaces
+      if (e.key === 'Tab') {
+        e.preventDefault();
+        const ta = e.target;
+        const s = ta.selectionStart;
+        ta.value = ta.value.substring(0, s) + '  ' + ta.value.substring(ta.selectionEnd);
+        ta.selectionStart = ta.selectionEnd = s + 2;
+      }
+    }
+
+    async function dbRunSql() {
+      const sql = document.getElementById('dbSqlEditor').value.trim();
+      if (!sql) return;
+
+      const resultArea = document.getElementById('dbResultArea');
+      const titleEl = document.getElementById('dbResultTitle');
+      resultArea.innerHTML = '<div style="padding:16px;color:var(--text-secondary);font-size:13px">Running...</div>';
+
+      const start = Date.now();
+      try {
+        const data = await api('/admin/api/sql', {
+          method: 'POST',
+          body: JSON.stringify({ sql, write: _dbWriteMode }),
+        });
+        const ms = Date.now() - start;
+
+        if (data.error) {
+          resultArea.innerHTML = \`<div style="padding:16px;color:var(--accent-red);font-family:monospace;font-size:13px;white-space:pre-wrap">\${escapeHtml(data.error)}</div>\`;
+          titleEl.textContent = 'Error';
+          return;
+        }
+
+        // Save to history
+        _dbAddHistory(sql);
+
+        _dbLastResult = { columns: data.columns, rows: data.rows };
+
+        if (data.columns.length === 0) {
+          resultArea.innerHTML = \`<div style="padding:16px;font-size:13px;color:var(--accent-green)">✓ OK — \${data.rows_affected ?? 0} rows affected (\${ms}ms)</div>\`;
+          titleEl.textContent = 'Result';
+          return;
+        }
+
+        const rowCount = data.rows.length;
+        titleEl.textContent = \`Results — \${rowCount.toLocaleString()} row\${rowCount !== 1 ? 's' : ''} (\${ms}ms)\`;
+
+        const colHtml = data.columns.map(c => \`<th style="padding:8px 12px;text-align:left;font-size:11px;font-weight:600;color:var(--text-secondary);border-bottom:1px solid var(--border-default);white-space:nowrap;position:sticky;top:0;background:var(--bg-elevated)">\${escapeHtml(c)}</th>\`).join('');
+        const rowsHtml = data.rows.map((row, ri) => {
+          const cells = row.map(v => {
+            let display = v == null ? '<span style="color:var(--text-secondary);font-style:italic">NULL</span>' : escapeHtml(String(v));
+            return \`<td style="padding:7px 12px;font-size:12px;font-family:monospace;border-bottom:1px solid var(--border-subtle);max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="\${v == null ? 'NULL' : escapeHtml(String(v))}">\${display}</td>\`;
+          }).join('');
+          const bg = ri % 2 === 0 ? '' : 'background:rgba(255,255,255,0.02)';
+          return \`<tr style="\${bg}" onmouseover="this.style.background='var(--bg-hover)'" onmouseout="this.style.background='\${ri % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.02)'}'">\${cells}</tr>\`;
+        }).join('');
+
+        resultArea.innerHTML = \`
+          <table style="width:100%;border-collapse:collapse">
+            <thead><tr>\${colHtml}</tr></thead>
+            <tbody>\${rowsHtml}</tbody>
+          </table>
+        \`;
+      } catch (e) {
+        resultArea.innerHTML = \`<div style="padding:16px;color:var(--accent-red);font-size:13px">Network error: \${escapeHtml(e.message)}</div>\`;
+        titleEl.textContent = 'Error';
+      }
+    }
+
+    function dbClearSql() {
+      document.getElementById('dbSqlEditor').value = '';
+      document.getElementById('dbResultArea').innerHTML = '';
+      document.getElementById('dbResultTitle').textContent = 'Results';
+      _dbLastResult = null;
+    }
+
+    function dbFormatSql() {
+      // Basic formatter: uppercase keywords, newlines before major clauses
+      const el = document.getElementById('dbSqlEditor');
+      let sql = el.value;
+      const keywords = ['SELECT','FROM','WHERE','LEFT JOIN','INNER JOIN','JOIN','GROUP BY','ORDER BY','LIMIT','OFFSET','HAVING','INSERT INTO','VALUES','UPDATE','SET','DELETE FROM','CREATE TABLE','DROP TABLE'];
+      keywords.forEach(k => {
+        sql = sql.replace(new RegExp('\\\\b' + k + '\\\\b', 'gi'), '\\n' + k);
+      });
+      sql = sql.replace(/,\\s*/g, ',\\n  ');
+      el.value = sql.trim();
+    }
+
+    function _dbAddHistory(sql) {
+      _dbHistory = _dbHistory.filter(h => h !== sql);
+      _dbHistory.unshift(sql);
+      if (_dbHistory.length > 20) _dbHistory.pop();
+      const sel = document.getElementById('dbQueryHistory');
+      sel.innerHTML = '<option value="">— History —</option>' +
+        _dbHistory.map((h, i) => \`<option value="\${i}">\${escapeHtml(h.substring(0, 60))}\${h.length > 60 ? '…' : ''}</option>\`).join('');
+    }
+
+    function loadDbHistoryItem() {
+      const sel = document.getElementById('dbQueryHistory');
+      const idx = parseInt(sel.value);
+      if (!isNaN(idx) && _dbHistory[idx]) {
+        document.getElementById('dbSqlEditor').value = _dbHistory[idx];
+      }
+      sel.value = '';
+    }
+
+    function dbExportCsv() {
+      if (!_dbLastResult || !_dbLastResult.columns.length) { showToast('No results to export', 'error'); return; }
+      const { columns, rows } = _dbLastResult;
+      const csv = [columns.join(','), ...rows.map(r => r.map(v => v == null ? '' : '"' + String(v).replace(/"/g, '""') + '"').join(','))].join('\\n');
+      _dbDownload('query_result.csv', 'text/csv', csv);
+    }
+
+    function dbExportJson() {
+      if (!_dbLastResult || !_dbLastResult.columns.length) { showToast('No results to export', 'error'); return; }
+      const { columns, rows } = _dbLastResult;
+      const json = JSON.stringify(rows.map(r => Object.fromEntries(columns.map((c, i) => [c, r[i]]))), null, 2);
+      _dbDownload('query_result.json', 'application/json', json);
+    }
+
+    function _dbDownload(filename, mime, content) {
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([content], { type: mime }));
+      a.download = filename;
+      a.click();
+    }
+
+    function escapeHtml(str) {
+      return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
+    // Auto-load tables when navigating to the database page
+    const _origNavigateTo = typeof navigateTo === 'function' ? navigateTo : null;
+    document.querySelectorAll('.nav-item[data-page="database"]').forEach(el => {
+      el.addEventListener('click', () => { setTimeout(loadDbTables, 50); });
+    });
   </script>
+
 </body>
 </html>
 `;

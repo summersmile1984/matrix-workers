@@ -1,7 +1,7 @@
 // Sync Durable Object for user-specific sync state
 // Handles both WebSocket-based traditional sync and HTTP-based sliding sync
 
-import { DurableObject } from 'cloudflare:workers';
+import { DurableObject } from '../shims/cloudflare-workers';
 import type { Env } from '../types';
 
 interface SyncSession {

@@ -3,7 +3,7 @@
 // This DO provides single-threaded, atomic operations for device keys and cross-signing keys
 // which is critical during the initial E2EE bootstrap flow.
 
-import { DurableObject } from 'cloudflare:workers';
+import { DurableObject } from '../shims/cloudflare-workers';
 import type { Env } from '../types';
 
 interface CrossSigningKeys {

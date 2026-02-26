@@ -4,7 +4,7 @@
 // Each instance handles rate limiting for a specific category (login, register, etc.)
 // Counters are stored in memory and automatically cleaned up when they expire
 
-import { DurableObject } from 'cloudflare:workers';
+import { DurableObject } from '../shims/cloudflare-workers';
 
 interface RateLimitEntry {
   count: number;

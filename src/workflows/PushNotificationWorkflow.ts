@@ -6,7 +6,7 @@
 // - Step persistence for resume on failure
 // - Parallel pusher delivery with retry
 
-import { WorkflowEntrypoint, WorkflowEvent, WorkflowStep } from 'cloudflare:workers';
+import { WorkflowEntrypoint, WorkflowEvent, WorkflowStep } from '../shims/cloudflare-workers';
 import type { Env } from '../types';
 
 // Parameters passed when triggering the workflow

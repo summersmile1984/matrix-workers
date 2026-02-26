@@ -3,7 +3,7 @@
 // Triggered when a previously-offline server is detected as reachable again.
 // Requests missing events via /backfill and /get_missing_events.
 
-import { WorkflowEntrypoint, WorkflowEvent, WorkflowStep } from 'cloudflare:workers';
+import { WorkflowEntrypoint, WorkflowEvent, WorkflowStep } from '../shims/cloudflare-workers';
 import type { Env } from '../types';
 
 export interface CatchupParams {

@@ -3,7 +3,7 @@
 // Runs periodically to remove media files that are no longer referenced
 // or have exceeded retention policies.
 
-import { WorkflowEntrypoint, WorkflowEvent, WorkflowStep } from 'cloudflare:workers';
+import { WorkflowEntrypoint, WorkflowEvent, WorkflowStep } from '../shims/cloudflare-workers';
 import type { Env } from '../types';
 
 export interface CleanupParams {

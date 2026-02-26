@@ -1,0 +1,7 @@
+# bunfig.toml — Bun configuration for self-hosted (non-Cloudflare) mode
+#
+# This aliases the Cloudflare-only `cloudflare:workers` virtual module to our
+# local shim, so DO classes and Workflow classes compile and load correctly.
+
+[alias]
+"cloudflare:workers" = "./src/shims/cloudflare-workers.ts"

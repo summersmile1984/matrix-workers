@@ -1,6 +1,6 @@
 // Room Durable Object for real-time room coordination
 
-import { DurableObject } from 'cloudflare:workers';
+import { DurableObject } from '../shims/cloudflare-workers';
 import type { Env } from '../types';
 
 interface RoomSession {
