@@ -1,6 +1,7 @@
 // Database service layer for D1
 
 import type { User, Device, Room, PDU, Membership, Env } from '../types';
+import { getAppServices, getInterestedAppServices, sendAppServiceTransaction } from './appservice';
 
 // User operations
 export async function createUser(
@@ -781,6 +782,65 @@ export async function notifyUsersOfEvent(
     });
 
     await Promise.all(notifications);
+
+    // ── AppService transaction pushing ──────────────────────────────────────
+    // Per Matrix spec, an AS receives events from any room where a member
+    // matches its registered user namespace — not just when the sender matches.
+    try {
+      const appservices = await getAppServices(env.DB);
+      if (appservices.length > 0) {
+        // Fetch the full event to include in the transaction
+        const fullEvent = await getEvent(env.DB, eventId);
+        if (fullEvent) {
+          // First check event-level matches (sender, state_key)
+          let interested = getInterestedAppServices(appservices, {
+            room_id: roomId,
+            sender: fullEvent.sender,
+            state_key: fullEvent.state_key,
+            type: fullEvent.type,
+          });
+
+          // If no match on event fields, check room members against user namespaces
+          // This covers the common case: @admin sends a message in a room with @test_hr
+          if (interested.length === 0) {
+            const roomMemberIds = members.results.map(m => m.user_id);
+            for (const as of appservices) {
+              for (const ns of as.namespaces.users) {
+                const re = new RegExp(ns.regex);
+                if (roomMemberIds.some(uid => re.test(uid))) {
+                  interested.push(as);
+                  break;
+                }
+              }
+            }
+          }
+
+          if (interested.length > 0) {
+            // Format event for the AS transaction (Client-Server event format)
+            const clientEvent = {
+              type: fullEvent.type,
+              event_id: fullEvent.event_id,
+              room_id: fullEvent.room_id,
+              sender: fullEvent.sender,
+              origin_server_ts: fullEvent.origin_server_ts,
+              content: fullEvent.content,
+              state_key: fullEvent.state_key,
+              unsigned: fullEvent.unsigned,
+            };
+
+            console.log('[appservice] Pushing event', eventId, 'to', interested.length, 'AS(es):',
+              interested.map(a => a.id).join(', '));
+
+            // Send to each interested AS (fire-and-forget, errors logged inside)
+            await Promise.all(
+              interested.map(as => sendAppServiceTransaction(env.DB, as, [clientEvent]))
+            );
+          }
+        }
+      }
+    } catch (error) {
+      console.error('[appservice] Error during AS event push:', error);
+    }
   } catch (error) {
     // Log but don't fail - event storage was successful
     console.error('[database] Failed to notify users of event:', error);

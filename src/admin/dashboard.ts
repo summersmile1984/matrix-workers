@@ -1566,6 +1566,7 @@ export const adminDashboardHtml = (serverName: string) => `
         <a class="nav-item" data-page="reports"><svg class="icon"><use href="#icon-alert-triangle"/></svg><span>Reports</span><span class="badge-count hidden" id="reportsBadge">0</span></a>
         <a class="nav-item" data-page="federation"><svg class="icon"><use href="#icon-globe"/></svg><span>Federation</span></a>
         <a class="nav-item" data-page="idp"><svg class="icon"><use href="#icon-key"/></svg><span>Identity Providers</span></a>
+        <a class="nav-item" data-page="appservices"><svg class="icon"><use href="#icon-link"/></svg><span>App Services</span></a>
         <a class="nav-item" data-page="config"><svg class="icon"><use href="#icon-settings"/></svg><span>Settings</span></a>
         <a class="nav-item" data-page="database"><svg class="icon"><use href="#icon-database"/></svg><span>Database</span><span class="nav-shortcut">g d</span></a>
       </nav>
@@ -1986,6 +1987,55 @@ export const adminDashboardHtml = (serverName: string) => `
         </div>
       </section>
 
+      <!-- App Services Page -->
+      <section id="page-appservices" class="page hidden">
+        <div class="header">
+          <h2>Application Services</h2>
+          <button class="btn btn-primary" onclick="openCreateAppServiceModal()">+ Register App Service</button>
+        </div>
+
+        <div class="stats-grid" id="appserviceStats" style="display:none">
+          <div class="stat-card">
+            <div class="label">Total Registered</div>
+            <div class="value" id="asTotalCount">0</div>
+          </div>
+          <div class="stat-card">
+            <div class="label">Pending Transactions</div>
+            <div class="value" id="asPendingTxns">0</div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <h3>Registered App Services</h3>
+          </div>
+          <div class="card-body">
+            <p style="margin-bottom: 15px; color: var(--text-secondary); font-size: 13px;">
+              Application services (bridges) allow Matrix to communicate with external networks like Telegram, IRC, Slack, and more.
+            </p>
+            <table class="table">
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>URL</th>
+                  <th>Sender</th>
+                  <th>Namespaces</th>
+                  <th>Transactions</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="appserviceTable">
+              </tbody>
+            </table>
+            <div id="appserviceEmpty" class="empty-state hidden">
+              <svg><use href="#icon-link"/></svg>
+              <h4>No application services registered</h4>
+              <p>Click "Register App Service" to add a bridge.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
       <!-- Database Page -->
       <section id="page-database" class="page hidden">
         <div class="header">
@@ -2382,6 +2432,98 @@ export const adminDashboardHtml = (serverName: string) => `
     </div>
   </div>
 
+  <!-- App Service Create/Edit Modal -->
+  <div class="modal-overlay" id="createAppServiceModal">
+    <div class="modal modal-lg">
+      <div class="modal-header">
+        <h3 id="asModalTitle">Register Application Service</h3>
+        <button class="modal-close" onclick="closeModal('createAppServiceModal')">&times;</button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="asEditId">
+        <div class="form-group">
+          <label>App Service ID *</label>
+          <input type="text" class="form-control" id="asId" placeholder="e.g., telegram, irc, slack">
+          <small style="color: var(--text-secondary); font-size: 12px;">Unique identifier for this bridge. Cannot be changed after creation.</small>
+        </div>
+        <div class="form-group">
+          <label>Bridge URL *</label>
+          <input type="text" class="form-control" id="asUrl" placeholder="e.g., http://localhost:9090">
+          <small style="color: var(--text-secondary); font-size: 12px;">The URL where the bridge is running. The homeserver will push events to this URL.</small>
+        </div>
+        <div class="form-group">
+          <label>Sender Localpart *</label>
+          <input type="text" class="form-control" id="asSenderLocalpart" placeholder="e.g., bridge-bot">
+          <small style="color: var(--text-secondary); font-size: 12px;">The localpart of the user the bridge uses (becomes @localpart:${serverName})</small>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>AS Token</label>
+            <input type="text" class="form-control" id="asAsToken" placeholder="Auto-generated if empty">
+            <small style="color: var(--text-secondary); font-size: 12px;">Token the bridge uses to authenticate with the homeserver</small>
+          </div>
+          <div class="form-group">
+            <label>HS Token</label>
+            <input type="text" class="form-control" id="asHsToken" placeholder="Auto-generated if empty">
+            <small style="color: var(--text-secondary); font-size: 12px;">Token the homeserver uses to authenticate with the bridge</small>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Protocols</label>
+          <input type="text" class="form-control" id="asProtocols" placeholder="e.g., irc, telegram (comma-separated)">
+          <small style="color: var(--text-secondary); font-size: 12px;">Third-party protocols this bridge supports</small>
+        </div>
+        <div class="checkbox-group">
+          <input type="checkbox" id="asRateLimited">
+          <label for="asRateLimited">Rate limited</label>
+        </div>
+        <hr style="border-color: var(--border-default); margin: 20px 0;">
+        <h4 style="margin-bottom: 15px;">Namespaces</h4>
+        <p style="color: var(--text-secondary); font-size: 13px; margin-bottom: 15px;">Define which users, rooms, and aliases this bridge manages. Use regex patterns.</p>
+        <div class="form-group">
+          <label>User Namespaces</label>
+          <div id="asUserNamespaces">
+            <div class="namespace-row" style="display:flex;gap:8px;margin-bottom:8px;align-items:center">
+              <input type="text" class="form-control" placeholder="Regex, e.g., @telegram_.*" style="flex:1" data-ns-type="users">
+              <label style="display:flex;align-items:center;gap:4px;white-space:nowrap;font-size:12px;"><input type="checkbox" checked data-ns-exclusive="users"> Exclusive</label>
+              <button class="btn btn-sm btn-danger" onclick="this.parentElement.remove()" style="padding:4px 8px">&times;</button>
+            </div>
+          </div>
+          <button class="btn btn-sm btn-secondary" onclick="addNamespaceRow('asUserNamespaces', 'users')">+ Add User Pattern</button>
+        </div>
+        <div class="form-group">
+          <label>Room Namespaces</label>
+          <div id="asRoomNamespaces"></div>
+          <button class="btn btn-sm btn-secondary" onclick="addNamespaceRow('asRoomNamespaces', 'rooms')">+ Add Room Pattern</button>
+        </div>
+        <div class="form-group">
+          <label>Alias Namespaces</label>
+          <div id="asAliasNamespaces"></div>
+          <button class="btn btn-sm btn-secondary" onclick="addNamespaceRow('asAliasNamespaces', 'aliases')">+ Add Alias Pattern</button>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="closeModal('createAppServiceModal')">Cancel</button>
+        <button class="btn btn-primary" onclick="saveAppService()" id="saveAsBtn">Register</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- App Service Detail Modal -->
+  <div class="modal-overlay" id="appserviceDetailModal">
+    <div class="modal modal-lg">
+      <div class="modal-header">
+        <h3>Application Service Details</h3>
+        <button class="modal-close" onclick="closeModal('appserviceDetailModal')">&times;</button>
+      </div>
+      <div class="modal-body" id="appserviceDetailContent">
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="closeModal('appserviceDetailModal')">Close</button>
+      </div>
+    </div>
+  </div>
+
   <script>
     let accessToken = localStorage.getItem('admin_token');
     let currentUserId = localStorage.getItem('admin_user_id');
@@ -2511,6 +2653,7 @@ export const adminDashboardHtml = (serverName: string) => `
         case 'reports': loadReports(); break;
         case 'federation': loadFederation(); break;
         case 'idp': loadIdpProviders(); break;
+        case 'appservices': loadAppServices(); break;
         case 'config': loadConfig(); loadRegistrationStatus(); break;
       }
     }
@@ -3933,6 +4076,285 @@ export const adminDashboardHtml = (serverName: string) => `
       input.select();
       document.execCommand('copy');
       showToast('SSO URL copied to clipboard', 'success');
+    }
+
+    // App Services
+    async function loadAppServices() {
+      try {
+        const data = await api('/admin/api/appservices');
+        const tbody = document.getElementById('appserviceTable');
+        const emptyState = document.getElementById('appserviceEmpty');
+        const statsGrid = document.getElementById('appserviceStats');
+
+        if (data.appservices.length === 0) {
+          tbody.innerHTML = '';
+          emptyState.classList.remove('hidden');
+          statsGrid.style.display = 'none';
+        } else {
+          emptyState.classList.add('hidden');
+          statsGrid.style.display = '';
+
+          let totalPending = 0;
+          data.appservices.forEach(a => totalPending += a.transactions.pending);
+          document.getElementById('asTotalCount').textContent = data.appservices.length;
+          document.getElementById('asPendingTxns').textContent = totalPending;
+
+          tbody.innerHTML = data.appservices.map(a => {
+            const nsUsers = (a.namespaces.users || []).length;
+            const nsRooms = (a.namespaces.rooms || []).length;
+            const nsAliases = (a.namespaces.aliases || []).length;
+            const nsSummary = [];
+            if (nsUsers) nsSummary.push(\`\${nsUsers} user\${nsUsers > 1 ? 's' : ''}\`);
+            if (nsRooms) nsSummary.push(\`\${nsRooms} room\${nsRooms > 1 ? 's' : ''}\`);
+            if (nsAliases) nsSummary.push(\`\${nsAliases} alias\${nsAliases > 1 ? 'es' : ''}\`);
+
+            return \`
+              <tr>
+                <td>
+                  <strong>\${escapeHtml(a.id)}</strong>
+                  <div style="font-size:11px;color:var(--text-secondary)">@\${escapeHtml(a.sender_localpart)}:${serverName}</div>
+                </td>
+                <td style="font-size:12px;max-width:200px;overflow:hidden;text-overflow:ellipsis;">\${escapeHtml(a.url)}</td>
+                <td>@\${escapeHtml(a.sender_localpart)}</td>
+                <td style="font-size:12px;">\${nsSummary.join(', ') || 'None'}</td>
+                <td>
+                  <span class="badge \${a.transactions.pending > 0 ? 'badge-warning' : 'badge-success'}">\${a.transactions.sent} sent</span>
+                  \${a.transactions.pending > 0 ? \`<span class="badge badge-warning" style="margin-left:4px">\${a.transactions.pending} pending</span>\` : ''}
+                </td>
+                <td class="actions">
+                  <button class="action-btn" onclick="viewAppService('\${escapeAttr(a.id)}')">View</button>
+                  <button class="action-btn" onclick="editAppService('\${escapeAttr(a.id)}')">Edit</button>
+                  <button class="action-btn" onclick="testAppService('\${escapeAttr(a.id)}')">Test</button>
+                  <button class="action-btn danger" onclick="deleteAppService('\${escapeAttr(a.id)}')">Delete</button>
+                </td>
+              </tr>
+            \`;
+          }).join('');
+        }
+      } catch (err) {
+        console.error('Failed to load app services:', err);
+        showToast('Failed to load application services', 'error');
+      }
+    }
+
+    function addNamespaceRow(containerId, nsType) {
+      const container = document.getElementById(containerId);
+      const row = document.createElement('div');
+      row.className = 'namespace-row';
+      row.style.cssText = 'display:flex;gap:8px;margin-bottom:8px;align-items:center';
+      row.innerHTML = \`
+        <input type="text" class="form-control" placeholder="Regex pattern" style="flex:1" data-ns-type="\${nsType}">
+        <label style="display:flex;align-items:center;gap:4px;white-space:nowrap;font-size:12px;"><input type="checkbox" checked data-ns-exclusive="\${nsType}"> Exclusive</label>
+        <button class="btn btn-sm btn-danger" onclick="this.parentElement.remove()" style="padding:4px 8px">&times;</button>
+      \`;
+      container.appendChild(row);
+    }
+
+    function collectNamespaces(containerId, nsType) {
+      const rows = document.getElementById(containerId).querySelectorAll('.namespace-row');
+      const result = [];
+      rows.forEach(row => {
+        const regex = row.querySelector(\`input[data-ns-type="\${nsType}"]\`).value.trim();
+        const exclusive = row.querySelector(\`input[data-ns-exclusive="\${nsType}"]\`).checked;
+        if (regex) result.push({ regex, exclusive });
+      });
+      return result;
+    }
+
+    function setNamespaceRows(containerId, nsType, entries) {
+      const container = document.getElementById(containerId);
+      container.innerHTML = '';
+      if (!entries || entries.length === 0) return;
+      entries.forEach(entry => {
+        const row = document.createElement('div');
+        row.className = 'namespace-row';
+        row.style.cssText = 'display:flex;gap:8px;margin-bottom:8px;align-items:center';
+        row.innerHTML = \`
+          <input type="text" class="form-control" placeholder="Regex pattern" style="flex:1" data-ns-type="\${nsType}" value="\${escapeAttr(entry.regex)}">
+          <label style="display:flex;align-items:center;gap:4px;white-space:nowrap;font-size:12px;"><input type="checkbox" \${entry.exclusive ? 'checked' : ''} data-ns-exclusive="\${nsType}"> Exclusive</label>
+          <button class="btn btn-sm btn-danger" onclick="this.parentElement.remove()" style="padding:4px 8px">&times;</button>
+        \`;
+        container.appendChild(row);
+      });
+    }
+
+    function openCreateAppServiceModal() {
+      document.getElementById('asModalTitle').textContent = 'Register Application Service';
+      document.getElementById('asEditId').value = '';
+      document.getElementById('asId').value = '';
+      document.getElementById('asId').disabled = false;
+      document.getElementById('asUrl').value = '';
+      document.getElementById('asSenderLocalpart').value = '';
+      document.getElementById('asAsToken').value = '';
+      document.getElementById('asHsToken').value = '';
+      document.getElementById('asProtocols').value = '';
+      document.getElementById('asRateLimited').checked = false;
+      // Reset namespace rows
+      document.getElementById('asUserNamespaces').innerHTML = '';
+      addNamespaceRow('asUserNamespaces', 'users');
+      document.getElementById('asRoomNamespaces').innerHTML = '';
+      document.getElementById('asAliasNamespaces').innerHTML = '';
+      document.getElementById('saveAsBtn').textContent = 'Register';
+      openModal('createAppServiceModal');
+    }
+
+    async function editAppService(asId) {
+      try {
+        const data = await api(\`/admin/api/appservices/\${encodeURIComponent(asId)}\`);
+        document.getElementById('asModalTitle').textContent = 'Edit Application Service';
+        document.getElementById('asEditId').value = data.id;
+        document.getElementById('asId').value = data.id;
+        document.getElementById('asId').disabled = true;
+        document.getElementById('asUrl').value = data.url;
+        document.getElementById('asSenderLocalpart').value = data.sender_localpart;
+        document.getElementById('asAsToken').value = data.as_token;
+        document.getElementById('asHsToken').value = data.hs_token;
+        document.getElementById('asProtocols').value = (data.protocols || []).join(', ');
+        document.getElementById('asRateLimited').checked = data.rate_limited;
+        // Set namespace rows
+        setNamespaceRows('asUserNamespaces', 'users', data.namespaces.users);
+        setNamespaceRows('asRoomNamespaces', 'rooms', data.namespaces.rooms);
+        setNamespaceRows('asAliasNamespaces', 'aliases', data.namespaces.aliases);
+        document.getElementById('saveAsBtn').textContent = 'Save Changes';
+        openModal('createAppServiceModal');
+      } catch (err) {
+        showToast('Failed to load app service details', 'error');
+      }
+    }
+
+    async function saveAppService() {
+      const editId = document.getElementById('asEditId').value;
+      const isEdit = !!editId;
+
+      const protocols = document.getElementById('asProtocols').value.trim()
+        .split(',').map(p => p.trim()).filter(p => p);
+
+      const payload = {
+        id: document.getElementById('asId').value.trim(),
+        url: document.getElementById('asUrl').value.trim(),
+        sender_localpart: document.getElementById('asSenderLocalpart').value.trim(),
+        as_token: document.getElementById('asAsToken').value.trim() || undefined,
+        hs_token: document.getElementById('asHsToken').value.trim() || undefined,
+        rate_limited: document.getElementById('asRateLimited').checked,
+        protocols,
+        namespaces: {
+          users: collectNamespaces('asUserNamespaces', 'users'),
+          rooms: collectNamespaces('asRoomNamespaces', 'rooms'),
+          aliases: collectNamespaces('asAliasNamespaces', 'aliases'),
+        },
+      };
+
+      if (!payload.id || !payload.url || !payload.sender_localpart) {
+        showToast('Please fill in ID, URL, and Sender Localpart', 'error');
+        return;
+      }
+
+      try {
+        if (isEdit) {
+          await api(\`/admin/api/appservices/\${encodeURIComponent(editId)}\`, {
+            method: 'PUT',
+            body: JSON.stringify(payload)
+          });
+          showToast('Application service updated', 'success');
+        } else {
+          const result = await api('/admin/api/appservices', {
+            method: 'POST',
+            body: JSON.stringify(payload)
+          });
+          showToast(\`Registered! AS Token: \${result.as_token?.substring(0, 16)}...\`, 'success');
+        }
+        closeModal('createAppServiceModal');
+        loadAppServices();
+      } catch (err) {
+        showToast(\`Failed to \${isEdit ? 'update' : 'register'} app service\`, 'error');
+      }
+    }
+
+    async function viewAppService(asId) {
+      try {
+        const data = await api(\`/admin/api/appservices/\${encodeURIComponent(asId)}\`);
+
+        const nsList = (type, entries) => {
+          if (!entries || entries.length === 0) return '<em style="color:var(--text-tertiary)">None</em>';
+          return entries.map(e => \`<code style="background:var(--bg-elevated);padding:2px 6px;border-radius:4px;font-size:12px;">\${escapeHtml(e.regex)}</code> \${e.exclusive ? '<span class="badge badge-info" style="font-size:10px;">exclusive</span>' : ''}\`).join('<br>');
+        };
+
+        const txnRows = (data.recent_transactions || []).map(t => \`
+          <tr>
+            <td>\${t.txn_id}</td>
+            <td>\${t.event_count}</td>
+            <td>\${t.sent_at ? '<span class="badge badge-success">Sent</span>' : '<span class="badge badge-warning">Pending</span>'}</td>
+            <td>\${t.retry_count}</td>
+            <td style="font-size:12px">\${new Date(t.created_at).toLocaleString()}</td>
+          </tr>
+        \`).join('');
+
+        document.getElementById('appserviceDetailContent').innerHTML = \`
+          <div class="detail-grid">
+            <div class="detail-item"><div class="label">ID</div><div class="value">\${escapeHtml(data.id)}</div></div>
+            <div class="detail-item"><div class="label">URL</div><div class="value">\${escapeHtml(data.url)}</div></div>
+            <div class="detail-item"><div class="label">Sender</div><div class="value">@\${escapeHtml(data.sender_localpart)}:${serverName}</div></div>
+            <div class="detail-item"><div class="label">Rate Limited</div><div class="value">\${data.rate_limited ? 'Yes' : 'No'}</div></div>
+            <div class="detail-item"><div class="label">Protocols</div><div class="value">\${(data.protocols || []).join(', ') || 'None'}</div></div>
+            <div class="detail-item"><div class="label">Created</div><div class="value">\${new Date(data.created_at).toLocaleString()}</div></div>
+          </div>
+          <div style="margin-top:20px">
+            <h4 style="margin-bottom:8px">Tokens</h4>
+            <div class="form-group">
+              <label style="font-size:12px">AS Token (bridge → homeserver)</label>
+              <input type="text" class="form-control" value="\${escapeAttr(data.as_token)}" readonly style="font-family:monospace;font-size:12px;">
+            </div>
+            <div class="form-group">
+              <label style="font-size:12px">HS Token (homeserver → bridge)</label>
+              <input type="text" class="form-control" value="\${escapeAttr(data.hs_token)}" readonly style="font-family:monospace;font-size:12px;">
+            </div>
+          </div>
+          <div style="margin-top:20px">
+            <h4 style="margin-bottom:8px">Namespaces</h4>
+            <div class="detail-grid">
+              <div class="detail-item"><div class="label">Users</div><div class="value">\${nsList('users', data.namespaces.users)}</div></div>
+              <div class="detail-item"><div class="label">Rooms</div><div class="value">\${nsList('rooms', data.namespaces.rooms)}</div></div>
+              <div class="detail-item"><div class="label">Aliases</div><div class="value">\${nsList('aliases', data.namespaces.aliases)}</div></div>
+            </div>
+          </div>
+          \${data.recent_transactions && data.recent_transactions.length > 0 ? \`
+            <div style="margin-top:20px">
+              <h4 style="margin-bottom:8px">Recent Transactions</h4>
+              <table class="table">
+                <thead><tr><th>TXN ID</th><th>Events</th><th>Status</th><th>Retries</th><th>Time</th></tr></thead>
+                <tbody>\${txnRows}</tbody>
+              </table>
+            </div>
+          \` : ''}
+        \`;
+        openModal('appserviceDetailModal');
+      } catch (err) {
+        showToast('Failed to load app service details', 'error');
+      }
+    }
+
+    async function testAppService(asId) {
+      try {
+        const result = await api(\`/admin/api/appservices/\${encodeURIComponent(asId)}/test\`, { method: 'POST' });
+        if (result.success) {
+          showToast(\`Connection to \${result.url} successful (HTTP \${result.status})\`, 'success');
+        } else {
+          showToast(\`Connection failed: \${result.error}\`, 'error');
+        }
+      } catch (err) {
+        showToast(\`Connection test failed: \${err.message}\`, 'error');
+      }
+    }
+
+    async function deleteAppService(asId) {
+      if (!confirm(\`Delete application service "\${asId}"? This will also delete all transaction history.\`)) return;
+      try {
+        await api(\`/admin/api/appservices/\${encodeURIComponent(asId)}\`, { method: 'DELETE' });
+        showToast('Application service deleted', 'success');
+        loadAppServices();
+      } catch (err) {
+        showToast('Failed to delete application service', 'error');
+      }
     }
 
     // Config

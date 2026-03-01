@@ -3,7 +3,8 @@
 import { Hono } from 'hono';
 import type { AppEnv, RoomCreateContent, RoomMemberContent, PDU } from '../types';
 import { Errors } from '../utils/errors';
-import { requireAuth } from '../middleware/auth';
+import { requireAuth, extractAccessToken } from '../middleware/auth';
+import { getAppServiceByToken } from '../services/appservice';
 import { generateRoomId, generateEventId, formatRoomAlias } from '../utils/ids';
 import { invalidateRoomCache } from '../services/room-cache';
 import { isRoomVersionSupported, getDefaultRoomVersion } from '../services/room-versions';
@@ -28,6 +29,22 @@ import {
 import type { JoinResult } from '../workflows';
 
 const app = new Hono<AppEnv>();
+
+/**
+ * Check if the current request is from an Application Service acting on behalf
+ * of a user in its namespace. Per Matrix spec §9.2, AS users get server-admin
+ * style permissions including the ability to join any room.
+ */
+async function isAppServiceUser(c: any): Promise<boolean> {
+  const token = extractAccessToken(c.req.raw);
+  if (!token) return false;
+  const appservice = await getAppServiceByToken(c.env.DB, token);
+  if (!appservice) return false;
+  const userId = c.get('userId') as string;
+  return appservice.namespaces.users.some(
+    (ns: { regex: string }) => new RegExp(ns.regex).test(userId)
+  );
+}
 
 // Validation for initial_state events
 interface StateEventValidation {
@@ -453,6 +470,9 @@ app.post('/_matrix/client/v3/rooms/:roomId/join', requireAuth(), async (c) => {
   } else if (currentMembership?.membership === 'join') {
     // Already joined
     return c.json({ room_id: roomId });
+  } else if (await isAppServiceUser(c)) {
+    // Per Matrix spec §9.2: AS users get server-admin style permissions
+    canJoin = true;
   }
 
   if (!canJoin) {
@@ -752,16 +772,36 @@ app.get('/_matrix/client/v3/rooms/:roomId/state', requireAuth(), async (c) => {
   return c.json(clientEvents);
 });
 
-// GET /_matrix/client/v3/rooms/:roomId/state/:eventType/:stateKey? - Get specific state
+// GET /_matrix/client/v3/rooms/:roomId/state/:eventType/:stateKey - Get specific state
+// Also handle trailing slash (empty stateKey) per Matrix spec
+app.get('/_matrix/client/v3/rooms/:roomId/state/:eventType/', requireAuth(), async (c) => {
+  // Redirect trailing slash to empty stateKey handler
+  const userId = c.get('userId');
+  const roomId = c.req.param('roomId');
+  const eventType = c.req.param('eventType');
+  const stateKey = '';
+
+  const membership = await getMembership(c.env.DB, roomId, userId);
+  if ((!membership || membership.membership !== 'join') && !(await isAppServiceUser(c))) {
+    return Errors.forbidden('Not a member of this room').toResponse();
+  }
+
+  const event = await getStateEvent(c.env.DB, roomId, eventType, stateKey);
+  if (!event) {
+    return Errors.notFound('State event not found').toResponse();
+  }
+
+  return c.json(event.content);
+});
 app.get('/_matrix/client/v3/rooms/:roomId/state/:eventType/:stateKey?', requireAuth(), async (c) => {
   const userId = c.get('userId');
   const roomId = c.req.param('roomId');
   const eventType = c.req.param('eventType');
   const stateKey = c.req.param('stateKey') ?? '';
 
-  // Check membership
+  // Check membership (AS users bypass per spec §9.2)
   const membership = await getMembership(c.env.DB, roomId, userId);
-  if (!membership || membership.membership !== 'join') {
+  if ((!membership || membership.membership !== 'join') && !(await isAppServiceUser(c))) {
     return Errors.forbidden('Not a member of this room').toResponse();
   }
 
@@ -774,6 +814,45 @@ app.get('/_matrix/client/v3/rooms/:roomId/state/:eventType/:stateKey?', requireA
 });
 
 // PUT /_matrix/client/v3/rooms/:roomId/state/:eventType/:stateKey? - Set state
+// Also handle trailing slash (empty stateKey)
+app.put('/_matrix/client/v3/rooms/:roomId/state/:eventType/', requireAuth(), async (c) => {
+  // Forward to main handler — Hono doesn't match trailing slash to optional param
+  const roomId = c.req.param('roomId');
+  const eventType = c.req.param('eventType');
+  const userId = c.get('userId');
+
+  const membership = await getMembership(c.env.DB, roomId, userId);
+  if ((!membership || membership.membership !== 'join') && !(await isAppServiceUser(c))) {
+    return Errors.forbidden('Not a member of this room').toResponse();
+  }
+
+  let body: any;
+  try {
+    body = await c.req.json();
+  } catch {
+    return Errors.badJson().toResponse();
+  }
+
+  const eventId = await generateEventId(c.env.SERVER_NAME);
+  const { events: latestEvents } = await getRoomEvents(c.env.DB, roomId, undefined, 1);
+  const prevEvents = latestEvents.map((e: any) => e.event_id);
+
+  const event: PDU = {
+    event_id: eventId,
+    room_id: roomId,
+    sender: userId,
+    type: eventType,
+    state_key: '',
+    content: body,
+    origin_server_ts: Date.now(),
+    depth: (latestEvents[0]?.depth ?? 0) + 1,
+    auth_events: [],
+    prev_events: prevEvents,
+  };
+
+  await storeEvent(c.env.DB, event);
+  return c.json({ event_id: eventId });
+});
 app.put('/_matrix/client/v3/rooms/:roomId/state/:eventType/:stateKey?', requireAuth(), async (c) => {
   const userId = c.get('userId');
   const roomId = c.req.param('roomId');
@@ -1025,20 +1104,25 @@ app.put('/_matrix/client/v3/rooms/:roomId/send/:eventType/:txnId', requireAuth()
   // Send push notifications via durable workflow (fire and forget)
   // Only for message and encrypted event types
   if (eventType === 'm.room.message' || eventType === 'm.room.encrypted') {
-    c.executionCtx.waitUntil(
-      c.env.PUSH_NOTIFICATION_WORKFLOW.create({
-        params: {
-          eventId,
-          roomId,
-          eventType,
-          sender: userId,
-          content,
-          originServerTs: event.origin_server_ts,
-        },
-      }).catch(err => {
-        console.error('[rooms] Push notification workflow error:', err);
-      })
-    );
+    const pushPromise = c.env.PUSH_NOTIFICATION_WORKFLOW.create({
+      params: {
+        eventId,
+        roomId,
+        eventType,
+        sender: userId,
+        content,
+        originServerTs: event.origin_server_ts,
+      },
+    }).catch(err => {
+      console.error('[rooms] Push notification workflow error:', err);
+    });
+
+    // executionCtx.waitUntil is Cloudflare-specific; in Bun self-hosted mode it doesn't exist
+    try {
+      c.executionCtx.waitUntil(pushPromise);
+    } catch {
+      // Fire-and-forget in self-hosted mode
+    }
   }
 
   return c.json({ event_id: eventId });
@@ -1562,9 +1646,9 @@ app.get('/_matrix/client/v3/rooms/:roomId/joined_members', requireAuth(), async 
   const userId = c.get('userId');
   const roomId = c.req.param('roomId');
 
-  // Check membership
+  // Check membership (AS users bypass per spec §9.2)
   const membership = await getMembership(c.env.DB, roomId, userId);
-  if (!membership || membership.membership !== 'join') {
+  if ((!membership || membership.membership !== 'join') && !(await isAppServiceUser(c))) {
     return Errors.forbidden('Not a member of this room').toResponse();
   }
 
@@ -1651,6 +1735,9 @@ app.post('/_matrix/client/v3/join/:roomIdOrAlias', requireAuth(), async (c) => {
     canJoin = true;
   } else if (currentMembership?.membership === 'join') {
     return c.json({ room_id: roomId });
+  } else if (await isAppServiceUser(c)) {
+    // Per Matrix spec §9.2: AS users get server-admin style permissions
+    canJoin = true;
   }
 
   if (!canJoin) {

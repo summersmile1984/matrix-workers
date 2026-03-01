@@ -162,7 +162,12 @@ export async function sendAppServiceTransaction(
   const txnId = txnResult.meta.last_row_id;
 
   try {
-    const response = await fetch(`${appservice.url}/_matrix/app/v1/transactions/${txnId}`, {
+    // Include hs_token as both Authorization header and access_token query param
+    // for maximum bridge compatibility (spec allows both)
+    const url = `${appservice.url}/_matrix/app/v1/transactions/${txnId}?access_token=${encodeURIComponent(appservice.hs_token)}`;
+    console.log(`[appservice] Sending txn ${txnId} (${events.length} event(s)) to ${appservice.id} at ${appservice.url}`);
+
+    const response = await fetch(url, {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
@@ -172,13 +177,17 @@ export async function sendAppServiceTransaction(
     });
 
     if (response.ok) {
+      console.log(`[appservice] Txn ${txnId} sent successfully to ${appservice.id}`);
       await db.prepare(
         `UPDATE appservice_transactions SET sent_at = ? WHERE txn_id = ?`
       ).bind(Date.now(), txnId).run();
       return true;
+    } else {
+      const body = await response.text().catch(() => '');
+      console.warn(`[appservice] Txn ${txnId} to ${appservice.id} failed with status ${response.status}: ${body}`);
     }
   } catch (err) {
-    console.warn(`[appservice] Failed to send transaction to ${appservice.id}:`, err);
+    console.warn(`[appservice] Failed to send transaction ${txnId} to ${appservice.id}:`, err);
   }
 
   // Increment retry

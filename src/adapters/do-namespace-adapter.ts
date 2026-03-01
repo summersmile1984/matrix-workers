@@ -68,6 +68,9 @@ export function createDONamespace(
                     waitUntil: (p: Promise<unknown>) => p.catch(e => console.error('[DO waitUntil]', e)),
                     blockConcurrencyWhile: <T>(fn: () => Promise<T>): Promise<T> => fn(),
                     abort: (_reason?: string) => { },
+                    // WebSocket stubs – hibernation API is not available in self-hosted mode
+                    getWebSockets: () => [] as WebSocket[],
+                    acceptWebSocket: (_ws: WebSocket, _tags?: string[]) => { },
                 };
                 doInstances.set(key, new DOClass(ctx, env));
             }

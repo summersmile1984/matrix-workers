@@ -23,6 +23,7 @@ import {
   deleteAllUserTokens,
 } from '../services/database';
 import { requireAuth, extractAccessToken } from '../middleware/auth';
+import { getAppServiceByToken } from '../services/appservice';
 
 const app = new Hono<AppEnv>();
 
@@ -35,6 +36,9 @@ app.get('/_matrix/client/v3/login', (c) => {
       },
       {
         type: 'm.login.token',
+      },
+      {
+        type: 'm.login.application_service',
       },
       {
         type: 'm.login.dummy',
@@ -114,6 +118,37 @@ app.post('/_matrix/client/v3/login', async (c) => {
     if (!valid) {
       return Errors.forbidden('Invalid username or password').toResponse();
     }
+  } else if (type === 'm.login.application_service') {
+    // Application Service login - AS can login as any user in its namespace
+    // Per Matrix spec v1.2+
+    if (!identifier || identifier.type !== 'm.id.user' || !identifier.user) {
+      return Errors.missingParam('identifier').toResponse();
+    }
+
+    const asToken = body.access_token || (c.req.header('Authorization')?.replace(/^Bearer\s+/i, ''));
+    if (!asToken) {
+      return Errors.missingToken('Missing AS token').toResponse();
+    }
+
+    const appservice = await getAppServiceByToken(c.env.DB, asToken);
+    if (!appservice) {
+      return Errors.unknownToken('Invalid AS token').toResponse();
+    }
+
+    const targetUser = identifier.user.startsWith('@')
+      ? identifier.user
+      : formatUserId(identifier.user, c.env.SERVER_NAME);
+
+    // Verify user is in AS namespace
+    const inNamespace = appservice.namespaces.users.some(
+      (ns: { regex: string }) => new RegExp(ns.regex).test(targetUser)
+    );
+    if (!inNamespace) {
+      return c.json({ errcode: 'M_EXCLUSIVE', error: 'User is not in the application service namespace' }, 403);
+    }
+
+    userId = targetUser;
+
   } else if (type === 'm.login.dummy') {
     // m.login.dummy is for UIA flows - requires identifier but no password verification
     // Per Matrix spec, this "does nothing and never fails" but still needs a user identifier
@@ -324,8 +359,72 @@ app.post('/_matrix/client/v3/register', async (c) => {
 
   const isGuest = kind === 'guest';
 
-  // For non-guests, require username and password
-  if (!isGuest) {
+  // Application Service registration — bypass UIA entirely
+  // The bridge library may send the type in different ways:
+  //   1. { auth: { type: "m.login.application_service" }, username: "..." }
+  //   2. { type: "m.login.application_service", username: "..." }
+  //   3. Just a valid AS token in Authorization header with a username in the AS namespace
+  let isAppServiceRegistration = false;
+  const authType = auth?.type || body.type;
+  const asToken = extractAccessToken(c.req.raw);
+
+  if (authType === 'm.login.application_service' || (asToken && !auth && !isGuest)) {
+    // Check for AS token
+    if (!asToken) {
+      return Errors.missingToken('Missing AS token').toResponse();
+    }
+
+    const appservice = await getAppServiceByToken(c.env.DB, asToken);
+    if (!appservice) {
+      // Not a valid AS token — fall through to normal registration if no explicit AS auth type
+      if (authType !== 'm.login.application_service') {
+        // Not an AS request, continue to normal UIA flow below
+      } else {
+        return Errors.unknownToken('Invalid AS token').toResponse();
+      }
+    } else {
+      if (!username) {
+        return Errors.missingParam('username').toResponse();
+      }
+
+      // Verify username is in AS namespace
+      const targetUserId = formatUserId(username, c.env.SERVER_NAME);
+      const inNamespace = appservice.namespaces.users.some(
+        (ns: { regex: string }) => new RegExp(ns.regex).test(targetUserId)
+      );
+      if (!inNamespace) {
+        return c.json({ errcode: 'M_EXCLUSIVE', error: 'User is not in the application service namespace' }, 403);
+      }
+
+      isAppServiceRegistration = true;
+      console.log(`[register] AS ${appservice.id} registering virtual user: ${targetUserId}`);
+
+      // If user already exists, return success (idempotent for ensureRegistered)
+      const existing = await getUserById(c.env.DB, targetUserId);
+      if (existing) {
+        console.log(`[register] AS user ${targetUserId} already exists, returning success`);
+        if (inhibit_login) {
+          return c.json({ user_id: targetUserId, home_server: c.env.SERVER_NAME });
+        }
+        // Generate device + token for the existing user
+        const deviceId = device_id || await generateDeviceId();
+        await createDevice(c.env.DB, targetUserId, deviceId, initial_device_display_name);
+        const accessToken = await generateAccessToken();
+        const tokenHash = await hashToken(accessToken);
+        const tokenId = await generateOpaqueId(16);
+        await createAccessToken(c.env.DB, tokenId, tokenHash, targetUserId, deviceId);
+        return c.json({
+          user_id: targetUserId,
+          access_token: accessToken,
+          device_id: deviceId,
+          home_server: c.env.SERVER_NAME,
+        });
+      }
+    }
+  }
+
+  if (!isAppServiceRegistration && !isGuest) {
+    // For non-guests, require username and password
     // Simple auth - in production, implement UIA (User-Interactive Authentication)
     if (!auth || auth.type !== 'm.login.dummy') {
       // Return UIA requirements
@@ -360,8 +459,8 @@ app.post('/_matrix/client/v3/register', async (c) => {
     return Errors.userInUse().toResponse();
   }
 
-  // Hash password (null for guests)
-  const passwordHash = password ? await hashPassword(password) : null;
+  // Hash password (null for guests and AS-registered users)
+  const passwordHash = (password && !isAppServiceRegistration) ? await hashPassword(password) : null;
 
   // Create user
   await createUser(c.env.DB, userId, localpart, passwordHash, isGuest);

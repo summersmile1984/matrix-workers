@@ -1674,6 +1674,323 @@ app.post('/admin/api/idp/providers/:id/test', requireAuth(), requireAdmin, async
 });
 
 // ============================================
+// Application Service Management Endpoints
+// ============================================
+
+// GET /admin/api/appservices - List all app service registrations
+app.get('/admin/api/appservices', requireAuth(), requireAdmin, async (c) => {
+  const db = c.env.DB;
+
+  const result = await db.prepare(`
+    SELECT id, url, as_token, hs_token, sender_localpart, rate_limited, protocols, namespaces, created_at
+    FROM appservice_registrations
+    ORDER BY created_at DESC
+  `).all<{
+    id: string;
+    url: string;
+    as_token: string;
+    hs_token: string;
+    sender_localpart: string;
+    rate_limited: number;
+    protocols: string | null;
+    namespaces: string;
+    created_at: number;
+  }>();
+
+  // Get transaction stats for each appservice
+  const appservices = await Promise.all(result.results.map(async (as) => {
+    const txnStats = await db.prepare(`
+      SELECT
+        COUNT(*) as total,
+        COUNT(CASE WHEN sent_at IS NOT NULL THEN 1 END) as sent,
+        COUNT(CASE WHEN sent_at IS NULL THEN 1 END) as pending
+      FROM appservice_transactions WHERE appservice_id = ?
+    `).bind(as.id).first<{ total: number; sent: number; pending: number }>();
+
+    return {
+      id: as.id,
+      url: as.url,
+      as_token: as.as_token,
+      hs_token: as.hs_token,
+      sender_localpart: as.sender_localpart,
+      rate_limited: as.rate_limited === 1,
+      protocols: as.protocols ? JSON.parse(as.protocols) : [],
+      namespaces: JSON.parse(as.namespaces),
+      created_at: as.created_at,
+      transactions: {
+        total: txnStats?.total || 0,
+        sent: txnStats?.sent || 0,
+        pending: txnStats?.pending || 0,
+      },
+    };
+  }));
+
+  return c.json({ appservices });
+});
+
+// POST /admin/api/appservices - Register new app service
+app.post('/admin/api/appservices', requireAuth(), requireAdmin, async (c) => {
+  const db = c.env.DB;
+  let body: any;
+
+  try {
+    body = await c.req.json();
+  } catch {
+    return Errors.badJson().toResponse();
+  }
+
+  const { id, url, sender_localpart, as_token, hs_token, rate_limited, protocols, namespaces } = body;
+
+  // Validate required fields
+  if (!id || !url || !sender_localpart) {
+    return Errors.missingParam('id, url, and sender_localpart are required').toResponse();
+  }
+
+  // Validate namespaces structure
+  if (!namespaces || typeof namespaces !== 'object') {
+    return Errors.missingParam('namespaces object with users, rooms, aliases arrays required').toResponse();
+  }
+  if (!Array.isArray(namespaces.users)) namespaces.users = [];
+  if (!Array.isArray(namespaces.rooms)) namespaces.rooms = [];
+  if (!Array.isArray(namespaces.aliases)) namespaces.aliases = [];
+
+  // Validate regex patterns
+  for (const ns of [...namespaces.users, ...namespaces.rooms, ...namespaces.aliases]) {
+    try {
+      new RegExp(ns.regex);
+    } catch {
+      return c.json({ errcode: 'M_INVALID_PARAM', error: `Invalid regex: ${ns.regex}` }, 400);
+    }
+  }
+
+  // Auto-generate tokens if not provided
+  const finalAsToken = as_token || crypto.randomUUID().replace(/-/g, '') + crypto.randomUUID().replace(/-/g, '');
+  const finalHsToken = hs_token || crypto.randomUUID().replace(/-/g, '') + crypto.randomUUID().replace(/-/g, '');
+
+  try {
+    await db.prepare(`
+      INSERT INTO appservice_registrations (id, url, as_token, hs_token, sender_localpart, rate_limited, protocols, namespaces, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).bind(
+      id,
+      url,
+      finalAsToken,
+      finalHsToken,
+      sender_localpart,
+      rate_limited === false ? 0 : 1,
+      JSON.stringify(protocols || []),
+      JSON.stringify(namespaces),
+      Date.now()
+    ).run();
+
+    return c.json({
+      success: true,
+      id,
+      as_token: finalAsToken,
+      hs_token: finalHsToken,
+      message: 'Application service registered successfully',
+    });
+  } catch (err: any) {
+    if (err.message?.includes('UNIQUE constraint')) {
+      return c.json({ errcode: 'M_INVALID_PARAM', error: 'An appservice with this ID or token already exists' }, 409);
+    }
+    console.error('Failed to create appservice:', err);
+    return c.json({ errcode: 'M_UNKNOWN', error: 'Failed to register application service' }, 500);
+  }
+});
+
+// GET /admin/api/appservices/:id - Get app service details
+app.get('/admin/api/appservices/:id', requireAuth(), requireAdmin, async (c) => {
+  const id = c.req.param('id');
+  const db = c.env.DB;
+
+  const as = await db.prepare(`
+    SELECT id, url, as_token, hs_token, sender_localpart, rate_limited, protocols, namespaces, created_at
+    FROM appservice_registrations WHERE id = ?
+  `).bind(id).first<{
+    id: string;
+    url: string;
+    as_token: string;
+    hs_token: string;
+    sender_localpart: string;
+    rate_limited: number;
+    protocols: string | null;
+    namespaces: string;
+    created_at: number;
+  }>();
+
+  if (!as) {
+    return Errors.notFound('Application service not found').toResponse();
+  }
+
+  // Get recent transactions
+  const transactions = await db.prepare(`
+    SELECT txn_id, events, created_at, sent_at, retry_count
+    FROM appservice_transactions
+    WHERE appservice_id = ?
+    ORDER BY created_at DESC
+    LIMIT 20
+  `).bind(id).all<{
+    txn_id: number;
+    events: string;
+    created_at: number;
+    sent_at: number | null;
+    retry_count: number;
+  }>();
+
+  return c.json({
+    id: as.id,
+    url: as.url,
+    as_token: as.as_token,
+    hs_token: as.hs_token,
+    sender_localpart: as.sender_localpart,
+    rate_limited: as.rate_limited === 1,
+    protocols: as.protocols ? JSON.parse(as.protocols) : [],
+    namespaces: JSON.parse(as.namespaces),
+    created_at: as.created_at,
+    recent_transactions: transactions.results.map(t => ({
+      txn_id: t.txn_id,
+      event_count: JSON.parse(t.events).length,
+      created_at: t.created_at,
+      sent_at: t.sent_at,
+      retry_count: t.retry_count,
+    })),
+  });
+});
+
+// PUT /admin/api/appservices/:id - Update app service
+app.put('/admin/api/appservices/:id', requireAuth(), requireAdmin, async (c) => {
+  const id = c.req.param('id');
+  const db = c.env.DB;
+  let body: any;
+
+  try {
+    body = await c.req.json();
+  } catch {
+    return Errors.badJson().toResponse();
+  }
+
+  const existing = await db.prepare('SELECT id FROM appservice_registrations WHERE id = ?').bind(id).first();
+  if (!existing) {
+    return Errors.notFound('Application service not found').toResponse();
+  }
+
+  const updates: string[] = [];
+  const values: any[] = [];
+
+  if (body.url !== undefined) {
+    updates.push('url = ?');
+    values.push(body.url);
+  }
+  if (body.as_token !== undefined) {
+    updates.push('as_token = ?');
+    values.push(body.as_token);
+  }
+  if (body.hs_token !== undefined) {
+    updates.push('hs_token = ?');
+    values.push(body.hs_token);
+  }
+  if (body.sender_localpart !== undefined) {
+    updates.push('sender_localpart = ?');
+    values.push(body.sender_localpart);
+  }
+  if (body.rate_limited !== undefined) {
+    updates.push('rate_limited = ?');
+    values.push(body.rate_limited ? 1 : 0);
+  }
+  if (body.protocols !== undefined) {
+    updates.push('protocols = ?');
+    values.push(JSON.stringify(body.protocols));
+  }
+  if (body.namespaces !== undefined) {
+    // Validate namespace structure
+    if (typeof body.namespaces !== 'object') {
+      return Errors.missingParam('namespaces must be an object').toResponse();
+    }
+    if (!Array.isArray(body.namespaces.users)) body.namespaces.users = [];
+    if (!Array.isArray(body.namespaces.rooms)) body.namespaces.rooms = [];
+    if (!Array.isArray(body.namespaces.aliases)) body.namespaces.aliases = [];
+
+    // Validate regex
+    for (const ns of [...body.namespaces.users, ...body.namespaces.rooms, ...body.namespaces.aliases]) {
+      try {
+        new RegExp(ns.regex);
+      } catch {
+        return c.json({ errcode: 'M_INVALID_PARAM', error: `Invalid regex: ${ns.regex}` }, 400);
+      }
+    }
+
+    updates.push('namespaces = ?');
+    values.push(JSON.stringify(body.namespaces));
+  }
+
+  if (updates.length === 0) {
+    return c.json({ success: true, message: 'No changes' });
+  }
+
+  values.push(id);
+
+  await db.prepare(`
+    UPDATE appservice_registrations SET ${updates.join(', ')} WHERE id = ?
+  `).bind(...values).run();
+
+  return c.json({ success: true, message: 'Application service updated' });
+});
+
+// DELETE /admin/api/appservices/:id - Delete app service
+app.delete('/admin/api/appservices/:id', requireAuth(), requireAdmin, async (c) => {
+  const id = c.req.param('id');
+  const db = c.env.DB;
+
+  const existing = await db.prepare('SELECT id FROM appservice_registrations WHERE id = ?').bind(id).first();
+  if (!existing) {
+    return Errors.notFound('Application service not found').toResponse();
+  }
+
+  await db.prepare('DELETE FROM appservice_registrations WHERE id = ?').bind(id).run();
+
+  return c.json({ success: true, message: 'Application service deleted' });
+});
+
+// POST /admin/api/appservices/:id/test - Test app service connectivity
+app.post('/admin/api/appservices/:id/test', requireAuth(), requireAdmin, async (c) => {
+  const id = c.req.param('id');
+  const db = c.env.DB;
+
+  const as = await db.prepare(`
+    SELECT url, hs_token FROM appservice_registrations WHERE id = ?
+  `).bind(id).first<{ url: string; hs_token: string }>();
+
+  if (!as) {
+    return Errors.notFound('Application service not found').toResponse();
+  }
+
+  try {
+    const testUserId = `@_appservice_test:${c.env.SERVER_NAME}`;
+    const response = await fetch(`${as.url}/_matrix/app/v1/users/${encodeURIComponent(testUserId)}`, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${as.hs_token}`,
+      },
+      signal: AbortSignal.timeout(10000),
+    });
+
+    return c.json({
+      success: true,
+      message: 'Connection successful',
+      status: response.status,
+      url: as.url,
+    });
+  } catch (err) {
+    return c.json({
+      success: false,
+      error: `Failed to connect: ${err}`,
+      url: as.url,
+    }, 400);
+  }
+});
+
+// ============================================
 // E2EE Key Debug Endpoint (Admin Only)
 // ============================================
 
