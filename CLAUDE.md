@@ -51,6 +51,28 @@ npm run db:migrate:local # Run D1 migrations (local)
 
 **TypeScript config:** Strict mode, ES2022 target, `@/*` path alias maps to `src/*`, `@cloudflare/workers-types`.
 
+## Self-Hosted Dev Environment
+
+```bash
+./scripts/self-hosted.sh start   # Start sqld + Matrix server
+./scripts/self-hosted.sh stop    # Stop
+./scripts/self-hosted.sh status  # Check health
+```
+
+| Service | URL |
+|---|---|
+| Matrix Homeserver | http://localhost:8787 |
+| Admin Dashboard | http://localhost:8787/admin |
+| Synapse Admin UI | http://localhost:8787/synapse-admin/ |
+| libSQL (sqld) | http://localhost:8080 |
+
+**Admin account:** `admin` / `admin123` (user_id: `@admin:localhost:8787`)
+
+**Run tests:**
+```bash
+LIBSQL_URL=http://localhost:8080 bun test tests/
+```
+
 ## Git Commit Rules
 
 - Never include Claude attribution (e.g., `Co-Authored-By`) in commit messages.

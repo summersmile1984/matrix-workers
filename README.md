@@ -76,6 +76,9 @@ The following environment variables can be set in `wrangler.jsonc` under `vars`,
 | `TURN_KEY_ID` | — | Cloudflare TURN server key ID (for voice/video) |
 | `LIVEKIT_API_KEY` | — | LiveKit API key (for MatrixRTC video calls) |
 | `LIVEKIT_URL` | — | LiveKit WebSocket URL for clients (e.g., `wss://livekit.example.com`) |
+| `ADMIN_CONTACT_EMAIL` | — | Admin contact email (shown in `/.well-known/matrix/support`) |
+| `ADMIN_CONTACT_MXID` | — | Admin Matrix ID (shown in `/.well-known/matrix/support`) |
+| `SUPPORT_PAGE_URL` | — | URL to a support/help page |
 
 **Secrets** (set via `npx wrangler secret put <NAME>`):
 
@@ -86,6 +89,7 @@ The following environment variables can be set in `wrangler.jsonc` under `vars`,
 | `CALLS_APP_ID` | Cloudflare Calls SFU App ID |
 | `CALLS_APP_SECRET` | Cloudflare Calls SFU App secret |
 | `EMAIL_FROM` | From address for email verification (e.g., `noreply@m.easydemo.org`) |
+| `OIDC_ENCRYPTION_KEY` | Encryption key for OIDC client secrets (generate with `openssl rand -base64 32`) |
 | `APNS_KEY_ID` | Apple Push Notification key ID |
 | `APNS_TEAM_ID` | Apple Developer Team ID |
 | `APNS_PRIVATE_KEY` | Contents of the `.p8` private key file |
@@ -163,7 +167,8 @@ The following environment variables can be set in `wrangler.jsonc` under `vars`,
 │  └────────────────────────────────────────────────────────────────────────┘ │
 │  ┌────────────────────────────────────────────────────────────────────────┐ │
 │  │                     Workflows (Durable Execution)                      │ │
-│  │  RoomJoinWorkflow · PushNotificationWorkflow                           │ │
+│  │  RoomJoinWorkflow · PushNotificationWorkflow · FederationCatchup       │ │
+│  │  MediaCleanupWorkflow · StateCompactionWorkflow                        │ │
 │  └────────────────────────────────────────────────────────────────────────┘ │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -284,22 +289,22 @@ Standard `/_synapse/admin/*` endpoints are available for compatibility with exis
 
 ## Development
 
+The project supports two development modes:
+
+- **Cloudflare Workers** — `npm run dev` (wrangler local dev server with D1/KV/R2)
+- **Self-Hosted** — `npm run self-hosted init` (Bun + libSQL + Docker services)
+
 ```bash
-# Install dependencies
-npm install
+# Quick start (Cloudflare)
+npm install && npm run dev
 
-# Run locally
-npm run dev
-
-# Type check
-npm run typecheck
-
-# Run tests
-npm run test
-
-# Apply migrations locally
-npm run db:migrate:local
+# Quick start (Self-hosted)
+npm install && npm run self-hosted init
 ```
+
+**See [DEVELOPMENT.md](./DEVELOPMENT.md) for the complete development guide** — project structure, Docker Compose setup, environment variables reference, database migrations, adapter mapping, and troubleshooting.
+
+**See [SELF-HOSTED.md](./SELF-HOSTED.md) for self-hosted deployment** — development quick start, production deployment with Nginx/SSL/systemd, LiveKit & Coturn production config, backups, and monitoring.
 
 ## Cloudflare Bindings
 
@@ -323,6 +328,9 @@ npm run db:migrate:local
 | `RATE_LIMIT` | Durable Object | Rate limiting |
 | `ROOM_JOIN_WORKFLOW` | Workflow | Async room join processing |
 | `PUSH_NOTIFICATION_WORKFLOW` | Workflow | Async push delivery |
+| `FEDERATION_CATCHUP_WORKFLOW` | Workflow | Federation event backfill |
+| `MEDIA_CLEANUP_WORKFLOW` | Workflow | Orphaned media cleanup |
+| `STATE_COMPACTION_WORKFLOW` | Workflow | Room state compaction |
 
 ## Security
 

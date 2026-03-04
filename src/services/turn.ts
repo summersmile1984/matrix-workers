@@ -66,9 +66,55 @@ export class TurnError extends Error {
 }
 
 /**
- * Get TURN credentials from Cloudflare Calls API
+ * Base64 encode string or buffer (handles padding properly)
+ */
+function base64Encode(data: Uint8Array | string): string {
+  const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : data;
+  return btoa(String.fromCharCode(...bytes));
+}
+
+/**
+ * Generate standard Coturn REST API credentials
+ */
+async function generateCoturnCredentials(
+  secret: string,
+  ttl: number,
+  userId?: string
+): Promise<MatrixTurnResponse> {
+  const timestamp = Math.floor(Date.now() / 1000) + ttl;
+  // Username format: timestamp:username
+  const username = `${timestamp}:${userId || 'anonymous'}`;
+
+  // Create HMAC-SHA1 of username using the static secret
+  const encoder = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    'raw',
+    encoder.encode(secret),
+    { name: 'HMAC', hash: 'SHA-1' },
+    false,
+    ['sign']
+  );
+
+  const signature = await crypto.subtle.sign('HMAC', key, encoder.encode(username));
+  const password = base64Encode(new Uint8Array(signature));
+
+  return {
+    username,
+    password,
+    uris: [
+      'turn:localhost:3478?transport=udp',
+      'turn:localhost:3478?transport=tcp',
+      // Include STUN as well
+      'stun:localhost:3478'
+    ],
+    ttl
+  };
+}
+
+/**
+ * Get TURN credentials from Cloudflare Calls API or Coturn
  *
- * @param env - Environment bindings containing TURN_KEY_ID and TURN_API_TOKEN
+ * @param env - Environment bindings containing TURN config
  * @param ttl - Time-to-live for credentials in seconds (default: 3600)
  * @param userId - Optional user ID for per-user rate limiting
  * @returns Matrix-formatted TURN credentials
@@ -81,10 +127,12 @@ export async function getMatrixTurnCredentials(
 ): Promise<MatrixTurnResponse> {
   // Validate configuration
   if (!env.TURN_KEY_ID || !env.TURN_API_TOKEN) {
-    throw new TurnError(
-      'TURN server not configured. Set TURN_KEY_ID and TURN_API_TOKEN.',
-      'NOT_CONFIGURED'
-    );
+    if (!env.COTURN_SECRET) {
+      throw new TurnError(
+        'TURN server not configured. Set TURN_KEY_ID and TURN_API_TOKEN or COTURN_SECRET.',
+        'NOT_CONFIGURED'
+      );
+    }
   }
 
   // Check per-user rate limit if userId provided
@@ -103,7 +151,12 @@ export async function getMatrixTurnCredentials(
   // Clamp TTL to valid range
   const validTtl = Math.max(MIN_TTL, Math.min(MAX_TTL, ttl));
 
-  // Check cache first
+  // If local Coturn is configured, bypass cache and Cloudflare
+  if (env.COTURN_SECRET) {
+    return generateCoturnCredentials(env.COTURN_SECRET, validTtl, userId);
+  }
+
+  // Check cache first (for Cloudflare API)
   const cacheKey = `turn_creds:${env.TURN_KEY_ID}:${validTtl}`;
   const cached = await getCachedCredentials(env.CACHE, cacheKey);
 
@@ -293,7 +346,7 @@ async function cacheCredentials(
  * Check if TURN is configured
  */
 export function isTurnConfigured(env: Env): boolean {
-  return Boolean(env.TURN_KEY_ID && env.TURN_API_TOKEN);
+  return Boolean((env.TURN_KEY_ID && env.TURN_API_TOKEN) || env.COTURN_SECRET);
 }
 
 /**
@@ -302,10 +355,12 @@ export function isTurnConfigured(env: Env): boolean {
 export function getTurnStatus(env: Env): {
   configured: boolean;
   keyId?: string;
+  type?: string;
 } {
   return {
     configured: isTurnConfigured(env),
     keyId: env.TURN_KEY_ID ? `${env.TURN_KEY_ID.slice(0, 8)}...` : undefined,
+    type: env.COTURN_SECRET ? 'coturn' : (env.TURN_KEY_ID ? 'cloudflare' : undefined)
   };
 }
 

@@ -547,7 +547,8 @@ app.get('/_matrix/client/v3/sync', requireAuth(), async (c) => {
   const hasLeaves = Object.keys(response.rooms!.leave!).length > 0;
   const hasToDevice = response.to_device!.events.length > 0;
   const hasAccountData = response.account_data!.events.length > 0;
-  const hasChanges = hasRoomChanges || hasInvites || hasLeaves || hasToDevice || hasAccountData;
+  const hasDeviceListChanges = response.device_lists?.changed?.length ? response.device_lists.changed.length > 0 : false;
+  const hasChanges = hasRoomChanges || hasInvites || hasLeaves || hasToDevice || hasAccountData || hasDeviceListChanges;
 
   // Parse timeout from query params (default 0 for no wait, max 30s)
   const timeout = Math.min(parseInt(c.req.query('timeout') || '0'), 30000);

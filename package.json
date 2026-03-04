@@ -14,13 +14,17 @@
     "test": "vitest",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src/",
-    "self-hosted": "bash scripts/self-hosted.sh"
+    "self-hosted": "bash scripts/self-hosted.sh --"
   },
   "dependencies": {
     "@cloudflare/workers-types": "^4.20241127.0",
     "@libsql/client": "^0.17.0",
+    "@mastra/core": "^1.8.0",
+    "@mastra/libsql": "^1.6.2",
     "hono": "^4.6.0",
-    "uuid": "^10.0.0"
+    "matrix-js-sdk": "^41.0.0",
+    "uuid": "^10.0.0",
+    "zod": "^3.25.76"
   },
   "devDependencies": {
     "@types/uuid": "^10.0.0",

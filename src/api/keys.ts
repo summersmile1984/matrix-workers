@@ -154,7 +154,7 @@ app.post('/_matrix/client/v3/keys/upload', requireAuth(), async (c) => {
       userMatch: device_keys.user_id === userId,
       deviceMatch: device_keys.device_id === deviceId,
     });
-    
+
     if (device_keys.user_id !== userId || device_keys.device_id !== deviceId) {
       console.log('[keys/upload] MISMATCH - returning 400');
       return c.json({
@@ -634,7 +634,7 @@ app.post('/_matrix/client/v3/keys/device_signing/upload', requireAuth(), async (
     const serverName = c.env.SERVER_NAME;
     const baseUrl = `https://${serverName}`;
     const params: Record<string, any> = {};
-    
+
     if (userIsOIDC) {
       // OIDC users: Use org.matrix.cross_signing_reset per MSC4312
       // This is the unstable identifier; stable is m.oauth
@@ -642,25 +642,25 @@ app.post('/_matrix/client/v3/keys/device_signing/upload', requireAuth(), async (
       // servers SHOULD offer two flows (one with each of m.oauth and org.matrix.cross_signing_reset)"
       const unstableStage = 'org.matrix.cross_signing_reset';
       const stableStage = 'm.oauth';
-      
+
       // Offer both flows for compatibility during migration
       flows.push({ stages: [unstableStage] });
       flows.push({ stages: [stableStage] });
-      
+
       // The URL points to authorization server's account management UI
       // where the user can approve the cross-signing reset
       const approvalUrl = `${baseUrl}/oauth/authorize/uia?session=${sessionId}&action=org.matrix.cross_signing_reset`;
-      
+
       // Both stages use the same params with 'url' pointing to approval page
       params[unstableStage] = { url: approvalUrl };
       params[stableStage] = { url: approvalUrl };
     }
-    
+
     if (userHasPassword) {
       // Password users: Offer password flow
       flows.push({ stages: ['m.login.password'] });
     }
-    
+
     // Fallback: If user has neither (shouldn't happen), offer password flow
     if (flows.length === 0) {
       flows.push({ stages: ['m.login.password'] });
@@ -713,15 +713,15 @@ app.post('/_matrix/client/v3/keys/device_signing/upload', requireAuth(), async (
 
       console.log('[keys] Password validated successfully');
     } else if (auth.type === 'org.matrix.cross_signing_reset' || auth.type === 'm.oauth' ||
-               auth.type === 'm.login.oauth' || auth.type === 'm.login.sso' || auth.type === 'm.login.token' ||
-               !auth.type) {
+      auth.type === 'm.login.oauth' || auth.type === 'm.login.sso' || auth.type === 'm.login.token' ||
+      !auth.type) {
       // MSC4312 cross-signing reset flow for OIDC users
       // Supports:
       // - org.matrix.cross_signing_reset (unstable per MSC4312)
       // - m.oauth (stable per MSC4312)
       // - m.login.oauth, m.login.sso, m.login.token (legacy compatibility)
       // - No type at all (per MSC4312: client just sends session)
-      
+
       const sessionId = auth.session;
       if (!sessionId) {
         console.log('[keys] No session ID in OAuth/cross-signing auth');
@@ -738,7 +738,7 @@ app.post('/_matrix/client/v3/keys/device_signing/upload', requireAuth(), async (
       }
 
       const session = JSON.parse(sessionJson);
-      
+
       // Check if session belongs to this user
       if (session.user_id !== userId) {
         console.log('[keys] UIA session user mismatch');
@@ -749,11 +749,11 @@ app.post('/_matrix/client/v3/keys/device_signing/upload', requireAuth(), async (
       // Accept any of the stage names that indicate completion
       const completedStages = session.completed_stages || [];
       const hasOAuthApproval = completedStages.includes('org.matrix.cross_signing_reset') ||
-                              completedStages.includes('m.oauth') ||
-                              completedStages.includes('m.login.oauth') ||
-                              completedStages.includes('m.login.sso') ||
-                              completedStages.includes('m.login.token');
-      
+        completedStages.includes('m.oauth') ||
+        completedStages.includes('m.login.oauth') ||
+        completedStages.includes('m.login.sso') ||
+        completedStages.includes('m.login.token');
+
       if (!hasOAuthApproval) {
         console.log('[keys] Cross-signing reset not approved for this session');
         return c.json({
@@ -763,7 +763,7 @@ app.post('/_matrix/client/v3/keys/device_signing/upload', requireAuth(), async (
       }
 
       console.log('[keys] Cross-signing reset approved via OAuth flow');
-      
+
       // Clean up the session
       await c.env.CACHE.delete(`uia_session:${sessionId}`);
     } else {
@@ -864,6 +864,21 @@ app.post('/_matrix/client/v3/keys/device_signing/upload', requireAuth(), async (
 
   // Write to KV as cache (eventually consistent, for performance)
   await c.env.CROSS_SIGNING_KEYS.put(`user:${userId}`, JSON.stringify(csKeys));
+
+  // Notify SyncDO to wake up any long-polling sync for this user
+  // Without this, the client's /sync stays blocked until timeout
+  try {
+    const syncDO = c.env.SYNC;
+    const doId = syncDO.idFromName(userId);
+    const stub = syncDO.get(doId);
+    await stub.fetch(new Request('http://internal/notify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason: 'cross-signing-keys-updated' }),
+    }));
+  } catch (err) {
+    console.warn('[keys] Failed to notify SyncDO:', err);
+  }
 
   return c.json({});
 });

@@ -59,6 +59,9 @@ export interface Env {
   // Workers VPC Service binding for LiveKit
   LIVEKIT_API: Fetcher;
 
+  // Local Coturn Configuration (replaces Cloudflare TURN)
+  COTURN_SECRET?: string;
+
   // LiveKit Configuration for MatrixRTC
   LIVEKIT_API_KEY?: string;      // LiveKit API Key (e.g., "devkey")
   LIVEKIT_API_SECRET?: string;   // LiveKit API Secret
@@ -73,6 +76,9 @@ export interface Env {
   // Cloudflare Workflows for durable multi-step operations
   ROOM_JOIN_WORKFLOW: Workflow;
   PUSH_NOTIFICATION_WORKFLOW: Workflow;
+  FEDERATION_CATCHUP_WORKFLOW: Workflow;
+  MEDIA_CLEANUP_WORKFLOW: Workflow;
+  STATE_COMPACTION_WORKFLOW: Workflow;
 
   // Email Service Configuration (Cloudflare Email Service)
   EMAIL?: SendEmail;         // Cloudflare Email Service binding

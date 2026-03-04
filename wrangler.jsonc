@@ -191,6 +191,21 @@
       "name": "push-notification-workflow",
       "binding": "PUSH_NOTIFICATION_WORKFLOW",
       "class_name": "PushNotificationWorkflow"
+    },
+    {
+      "name": "federation-catchup-workflow",
+      "binding": "FEDERATION_CATCHUP_WORKFLOW",
+      "class_name": "FederationCatchupWorkflow"
+    },
+    {
+      "name": "media-cleanup-workflow",
+      "binding": "MEDIA_CLEANUP_WORKFLOW",
+      "class_name": "MediaCleanupWorkflow"
+    },
+    {
+      "name": "state-compaction-workflow",
+      "binding": "STATE_COMPACTION_WORKFLOW",
+      "class_name": "StateCompactionWorkflow"
     }
   ]
 }

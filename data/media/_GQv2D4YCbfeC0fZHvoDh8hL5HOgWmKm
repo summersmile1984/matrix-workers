@@ -1,0 +1,7 @@
+# 测试文档
+这是一个用于测试markitdown管线的文件。
+
+## 核心内容
+- Matrix Agent Bridge 多模态支持
+- 文件附件预处理
+- markitdown服务集成

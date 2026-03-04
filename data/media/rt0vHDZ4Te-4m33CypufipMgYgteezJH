@@ -1,0 +1,17 @@
+# Matrix Agent Bridge 测试文档
+
+## 功能概述
+
+Matrix Agent Bridge 是一个将 Matrix 聊天与 AI Agent 连接的桥接服务。
+
+### 核心特性
+- 支持多种 AI Provider（OpenClaw、Mastra、Dify、Claude Code）
+- 自动化 AppService 注册
+- 流式消息传输
+- 文件附件预处理
+
+### 测试要点
+这个文档用来测试 markitdown 服务是否能正确地将上传的文本文件转换为 Markdown，
+并由 AI Agent 读取和理解文件内容后进行回复。
+
+如果 Agent 能够总结这个文档的内容，说明多模态管线工作正常。
