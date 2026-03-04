@@ -8,6 +8,9 @@ import { LibSQLStore } from '@mastra/libsql';
 
 import { roomJoinWorkflow } from './workflows/room-join';
 import { pushNotificationWorkflow } from './workflows/push-notification';
+import { federationCatchupWorkflow } from './workflows/federation-catchup';
+import { mediaCleanupWorkflow } from './workflows/media-cleanup';
+import { stateCompactionWorkflow } from './workflows/state-compaction';
 
 /**
  * Create a Mastra instance configured with libSQL storage.
@@ -27,6 +30,9 @@ export function createMastraInstance(libsqlUrl: string, libsqlToken?: string): M
         workflows: {
             roomJoinWorkflow,
             pushNotificationWorkflow,
+            federationCatchupWorkflow,
+            mediaCleanupWorkflow,
+            stateCompactionWorkflow,
         },
     });
 }
