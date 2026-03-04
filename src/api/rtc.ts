@@ -13,7 +13,7 @@ const app = new Hono<AppEnv>();
 // Returns empty list to indicate standard WebRTC/TURN should be used (no special transports)
 app.get('/_matrix/client/unstable/org.matrix.msc4143/rtc/transports', (c) => {
   const config = getLiveKitConfig(c.env);
-  
+
   // If LiveKit is configured, advertise it as a transport option
   if (config) {
     return c.json({
@@ -65,27 +65,44 @@ interface GetTokenResponse {
   jwt: string;
 }
 
-// Verify OpenID token with the homeserver
+// Verify OpenID token by looking it up in KV storage
+// OpenID tokens are created by account.ts POST /user/:userId/openid/request_token
+// and stored in CACHE KV with prefix "openid_token:"
 async function verifyOpenIDToken(
   token: OpenIDToken,
-  serverName: string
+  serverName: string,
+  cache: KVNamespace
 ): Promise<{ sub: string } | null> {
+  // Reject tokens from different servers (federation not yet supported)
+  if (token.matrix_server_name !== serverName) {
+    console.log('[rtc] OpenID token from different server:', token.matrix_server_name);
+    return null;
+  }
+
   try {
-    // The OpenID token should be verified against the homeserver
-    // For our own homeserver, we can verify it directly
-    if (token.matrix_server_name !== serverName) {
-      console.log('Token from different server:', token.matrix_server_name);
-      // For federated calls, we'd need to verify with the remote server
-      // For now, we only accept tokens from our own server
+    // Look up the token in KV — must match how account.ts stores it
+    const tokenJson = await cache.get(`openid_token:${token.access_token}`);
+    if (!tokenJson) {
+      console.log('[rtc] OpenID token not found in KV');
       return null;
     }
 
-    // For our own tokens, we trust them if they came from our server
-    // In production, you'd want to validate the token signature or check against storage
-    // For simplicity, we'll accept tokens that match our server name
-    return { sub: token.access_token };
+    const tokenData = JSON.parse(tokenJson) as {
+      user_id: string;
+      created_at: number;
+      expires_at: number;
+    };
+
+    // Check expiry
+    if (Date.now() > tokenData.expires_at) {
+      console.log('[rtc] OpenID token expired');
+      return null;
+    }
+
+    console.log('[rtc] OpenID token verified for user:', tokenData.user_id);
+    return { sub: tokenData.user_id };
   } catch (error) {
-    console.error('Error verifying OpenID token:', error);
+    console.error('[rtc] Error verifying OpenID token:', error);
     return null;
   }
 }
@@ -97,9 +114,8 @@ function roomIdToLiveKitName(roomId: string): string {
   return roomId.replace(/[^a-zA-Z0-9-_]/g, '_');
 }
 
-// POST /livekit/get_token - Get a LiveKit JWT token
-// This is the endpoint that Element X calls to get call credentials
-app.post('/livekit/get_token', async (c) => {
+// Shared handler for both /livekit/get_token and /livekit/get_token/sfu/get
+async function handleGetToken(c: any): Promise<Response> {
   const config = getLiveKitConfig(c.env);
   if (!config) {
     return c.json(
@@ -129,26 +145,19 @@ app.post('/livekit/get_token', async (c) => {
     );
   }
 
-  // Verify the OpenID token (simplified for now)
-  // In production, you'd verify the token cryptographically
-  const verified = await verifyOpenIDToken(body.openid_token, c.env.SERVER_NAME);
+  // Verify the OpenID token against our KV storage
+  const verified = await verifyOpenIDToken(body.openid_token, c.env.SERVER_NAME, c.env.CACHE);
   if (!verified) {
-    // For now, accept all tokens from our server's clients
-    // This is a simplification - in production you'd verify properly
-    console.log('OpenID token verification skipped for development');
+    return c.json(
+      { errcode: 'M_UNKNOWN_TOKEN', error: 'Invalid or expired OpenID token' },
+      401
+    );
   }
 
-  // Generate participant identity - use access_token as identity if no member info
-  let participantId: string;
-  let participantName: string;
-
-  if (body.member) {
-    participantId = body.member.claimed_user_id;
-    participantName = participantId.split(':')[0].replace('@', '');
-  } else {
-    participantId = body.device_id || body.openid_token.access_token.substring(0, 16);
-    participantName = body.device_id || 'participant';
-  }
+  // Use verified user_id as participant identity — this is the real Matrix user
+  const userId = verified.sub;
+  const participantId = userId;
+  const participantName = userId.split(':')[0].replace('@', '');
 
   // Convert Matrix room ID to LiveKit room name
   const liveKitRoom = roomIdToLiveKitName(roomId);
@@ -171,13 +180,17 @@ app.post('/livekit/get_token', async (c) => {
 
     return c.json(response);
   } catch (error) {
-    console.error('Error generating LiveKit token:', error);
+    console.error('[rtc] Error generating LiveKit token:', error);
     return c.json(
       { errcode: 'M_UNKNOWN', error: 'Failed to generate token' },
       500
     );
   }
-});
+}
+
+// POST /livekit/get_token - Get a LiveKit JWT token
+// This is the endpoint that Element X calls to get call credentials
+app.post('/livekit/get_token', handleGetToken);
 
 // OPTIONS handler for CORS preflight
 app.options('/livekit/get_token', () => {
@@ -192,93 +205,7 @@ app.options('/livekit/get_token', () => {
 });
 
 // POST /livekit/get_token/sfu/get - Alternative endpoint format used by Element X
-// This is the same as /livekit/get_token but with /sfu/get suffix
-app.post('/livekit/get_token/sfu/get', async (c) => {
-  console.log('[LiveKit] /sfu/get request received');
-
-  const config = getLiveKitConfig(c.env);
-  if (!config) {
-    console.log('[LiveKit] Config missing - API_KEY:', !!c.env.LIVEKIT_API_KEY, 'API_SECRET:', !!c.env.LIVEKIT_API_SECRET, 'URL:', !!c.env.LIVEKIT_URL);
-    return c.json(
-      { errcode: 'M_UNKNOWN', error: 'LiveKit not configured' },
-      500
-    );
-  }
-
-  let body: GetTokenRequest;
-  try {
-    const rawBody = await c.req.text();
-    console.log('[LiveKit] Raw body length:', rawBody.length, 'preview:', rawBody.substring(0, 200));
-    body = JSON.parse(rawBody);
-  } catch (e) {
-    console.log('[LiveKit] JSON parse error:', e);
-    return c.json(
-      { errcode: 'M_BAD_JSON', error: 'Invalid JSON body' },
-      400
-    );
-  }
-
-  // Handle both old format (room_id, member) and Element X format (room, device_id)
-  const roomId = body.room_id || body.room;
-
-  // Validate required fields
-  if (!roomId || !body.openid_token) {
-    console.log('[LiveKit] Missing fields - room_id:', !!body.room_id, 'room:', !!body.room, 'openid_token:', !!body.openid_token);
-    return c.json(
-      { errcode: 'M_BAD_JSON', error: 'Missing required fields: room and openid_token' },
-      400
-    );
-  }
-
-  // Verify the OpenID token (simplified for now)
-  const verified = await verifyOpenIDToken(body.openid_token, c.env.SERVER_NAME);
-  if (!verified) {
-    console.log('OpenID token verification skipped for development');
-  }
-
-  // Generate participant identity - use access_token as identity if no member info
-  // Element X doesn't send member info, just device_id
-  let participantId: string;
-  let participantName: string;
-
-  if (body.member) {
-    participantId = body.member.claimed_user_id;
-    participantName = participantId.split(':')[0].replace('@', '');
-  } else {
-    // For Element X, derive identity from openid_token
-    // The access_token's user can be looked up, but for simplicity use device_id
-    participantId = body.device_id || body.openid_token.access_token.substring(0, 16);
-    participantName = body.device_id || 'participant';
-  }
-
-  // Convert Matrix room ID to LiveKit room name
-  const liveKitRoom = roomIdToLiveKitName(roomId);
-
-  try {
-    // Generate JWT token for this participant
-    const jwt = await generateLiveKitToken(
-      config.apiKey,
-      config.apiSecret,
-      liveKitRoom,
-      participantId,
-      participantName,
-      3600 // 1 hour TTL
-    );
-
-    const response: GetTokenResponse = {
-      url: config.wsUrl,
-      jwt: jwt,
-    };
-
-    return c.json(response);
-  } catch (error) {
-    console.error('Error generating LiveKit token:', error);
-    return c.json(
-      { errcode: 'M_UNKNOWN', error: 'Failed to generate token' },
-      500
-    );
-  }
-});
+app.post('/livekit/get_token/sfu/get', handleGetToken);
 
 // OPTIONS handler for /sfu/get endpoint
 app.options('/livekit/get_token/sfu/get', () => {

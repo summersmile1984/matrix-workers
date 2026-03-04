@@ -31,9 +31,54 @@ app.get('/_matrix/federation/v1/version', async (c) => {
   });
 });
 
+// GET /_matrix/federation/v1/openid/userinfo - Validate OpenID token and return user info
+// This MUST be before the federation auth middleware since it's unauthenticated per spec.
+// Third-party services (e.g. LiveKit auth) use this to verify a user's identity.
+// Spec: https://spec.matrix.org/v1.12/server-server-api/#openid
+app.get('/_matrix/federation/v1/openid/userinfo', async (c) => {
+  const accessToken = c.req.query('access_token');
+
+  if (!accessToken) {
+    return Errors.missingParam('access_token').toResponse();
+  }
+
+  // Look up the OpenID token in CACHE KV
+  // Must match how account.ts stores tokens: prefix "openid_token:" in CACHE
+  const tokenJson = await c.env.CACHE.get(`openid_token:${accessToken}`);
+
+  if (!tokenJson) {
+    return c.json({
+      errcode: 'M_UNKNOWN_TOKEN',
+      error: 'Invalid or expired OpenID token',
+    }, 401);
+  }
+
+  let tokenData: { user_id: string; created_at: number; expires_at: number };
+  try {
+    tokenData = JSON.parse(tokenJson);
+  } catch {
+    return c.json({
+      errcode: 'M_UNKNOWN_TOKEN',
+      error: 'Invalid token data',
+    }, 401);
+  }
+
+  // Check if token has expired
+  if (Date.now() > tokenData.expires_at) {
+    return c.json({
+      errcode: 'M_UNKNOWN_TOKEN',
+      error: 'OpenID token has expired',
+    }, 401);
+  }
+
+  return c.json({
+    sub: tokenData.user_id,
+  });
+});
+
 // Apply federation authentication to all other federation v1 endpoints
 // Key endpoints (/_matrix/key/*) remain unauthenticated as they are used to establish trust
-// Version endpoint is also unauthenticated as it's used for initial contact
+// Version and openid/userinfo endpoints are also unauthenticated (defined above)
 app.use('/_matrix/federation/v1/*', requireFederationAuth());
 
 // GET /_matrix/key/v2/server - Get server signing keys
@@ -2926,21 +2971,21 @@ async function getRoomPublicInfo(db: D1Database, roomId: string, _serverName: st
     try {
       const content = JSON.parse(createEvent.content);
       roomType = content.type;
-    } catch {}
+    } catch { }
   }
 
   let historyVisibility = 'shared';
   if (historyEvent) {
     try {
       historyVisibility = JSON.parse(historyEvent.content).history_visibility;
-    } catch {}
+    } catch { }
   }
 
   let guestAccess = false;
   if (guestEvent) {
     try {
       guestAccess = JSON.parse(guestEvent.content).guest_access === 'can_join';
-    } catch {}
+    } catch { }
   }
 
   return {
@@ -3126,41 +3171,6 @@ app.get('/_matrix/federation/v1/timestamp_to_event/:roomId', async (c) => {
   });
 });
 
-// GET /_matrix/federation/v1/openid/userinfo - Validate OpenID token and return user info
-app.get('/_matrix/federation/v1/openid/userinfo', async (c) => {
-  const accessToken = c.req.query('access_token');
-
-  if (!accessToken) {
-    return Errors.missingParam('access_token').toResponse();
-  }
-
-  // Look up the OpenID token in KV
-  const tokenData = await c.env.SESSIONS.get(`openid:${accessToken}`, 'json') as {
-    user_id: string;
-    expires_at: number;
-  } | null;
-
-  if (!tokenData) {
-    return c.json({
-      errcode: 'M_UNKNOWN_TOKEN',
-      error: 'Invalid or expired OpenID token',
-    }, 401);
-  }
-
-  // Check if token has expired
-  if (Date.now() > tokenData.expires_at) {
-    // Clean up expired token
-    await c.env.SESSIONS.delete(`openid:${accessToken}`);
-    return c.json({
-      errcode: 'M_UNKNOWN_TOKEN',
-      error: 'OpenID token has expired',
-    }, 401);
-  }
-
-  return c.json({
-    sub: tokenData.user_id,
-  });
-});
 
 // PUT /_matrix/federation/v1/exchange_third_party_invite/:roomId - Exchange 3PID invite
 // Handles third-party invites when a user accepts an invite via their verified email/phone
