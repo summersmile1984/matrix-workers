@@ -437,22 +437,54 @@ app.post('/_matrix/client/v3/user_directory/search', requireAuth(), async (c) =>
   }
 
   // Search for users using FTS5 for ranked full-text search
-  const ftsSearchTerm = searchTerm.replace(/['"*()]/g, ' ').trim();
-  const results = await db.prepare(`
-    SELECT u.user_id, u.display_name, u.avatar_url
-    FROM users_fts fts
-    JOIN users u ON fts.user_id = u.user_id
-    WHERE users_fts MATCH ?
-      AND u.is_deactivated = 0
-      AND u.is_guest = 0
-      AND u.user_id != ?
-    ORDER BY bm25(users_fts)
-    LIMIT ?
-  `).bind(ftsSearchTerm, requestingUserId, limit + 1).all<{
-    user_id: string;
-    display_name: string | null;
-    avatar_url: string | null;
-  }>();
+  // Escape ALL FTS5 special characters: @ is a column filter prefix, others are operators
+  const ftsSearchTerm = searchTerm.replace(/[@'"*(){}\[\]:^~!\-+|&<>]/g, ' ').trim();
+
+  let results: { results: { user_id: string; display_name: string | null; avatar_url: string | null }[] };
+
+  if (ftsSearchTerm.length > 0) {
+    // Try FTS5 first for ranked results
+    try {
+      // Wrap each token in double quotes to treat as literal
+      const quotedTerms = ftsSearchTerm.split(/\s+/).filter(Boolean).map(t => `"${t}"`).join(' ');
+      results = await db.prepare(`
+        SELECT u.user_id, u.display_name, u.avatar_url
+        FROM users_fts fts
+        JOIN users u ON fts.user_id = u.user_id
+        WHERE users_fts MATCH ?
+          AND u.is_deactivated = 0
+          AND u.is_guest = 0
+          AND u.user_id != ?
+        ORDER BY bm25(users_fts)
+        LIMIT ?
+      `).bind(quotedTerms, requestingUserId, limit + 1).all();
+    } catch (ftsError) {
+      console.warn('[user_directory] FTS5 search failed, falling back to LIKE:', ftsError);
+      // Fallback to LIKE query
+      const likePattern = `%${searchTerm}%`;
+      results = await db.prepare(`
+        SELECT user_id, display_name, avatar_url
+        FROM users
+        WHERE (user_id LIKE ? OR display_name LIKE ?)
+          AND is_deactivated = 0
+          AND is_guest = 0
+          AND user_id != ?
+        LIMIT ?
+      `).bind(likePattern, likePattern, requestingUserId, limit + 1).all();
+    }
+  } else {
+    // Original search term was all special chars (e.g. just "@"), use LIKE
+    const likePattern = `%${searchTerm}%`;
+    results = await db.prepare(`
+      SELECT user_id, display_name, avatar_url
+      FROM users
+      WHERE (user_id LIKE ? OR display_name LIKE ?)
+        AND is_deactivated = 0
+        AND is_guest = 0
+        AND user_id != ?
+      LIMIT ?
+    `).bind(likePattern, likePattern, requestingUserId, limit + 1).all();
+  }
 
   const limited = results.results.length > limit;
   // Return explicit null values (not undefined/omitted) so Element X knows user exists

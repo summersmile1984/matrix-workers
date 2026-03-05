@@ -9,7 +9,7 @@ import type { AppEnv } from '../types';
 const RATE_LIMITS: Record<string, { requests: number; windowMs: number }> = {
   login: { requests: 10, windowMs: 60 * 1000 }, // 10 per minute
   register: { requests: 5, windowMs: 60 * 1000 }, // 5 per minute
-  default: { requests: 100, windowMs: 60 * 1000 }, // 100 per minute
+  default: { requests: 300, windowMs: 60 * 1000 }, // 300 per minute (raised from 100)
   sync: { requests: 300, windowMs: 60 * 1000 }, // 300 per minute (long-polling)
   e2ee: { requests: 500, windowMs: 60 * 1000 }, // 500 per minute (key uploads)
   media_upload: { requests: 30, windowMs: 60 * 1000 }, // 30 per minute
@@ -18,6 +18,8 @@ const RATE_LIMITS: Record<string, { requests: number; windowMs: number }> = {
   federation: { requests: 500, windowMs: 60 * 1000 }, // 500 per minute
   send_message: { requests: 60, windowMs: 60 * 1000 }, // 60 per minute
   create_room: { requests: 10, windowMs: 60 * 1000 }, // 10 per minute
+  room_messages: { requests: 300, windowMs: 60 * 1000 }, // 300 per minute (history fetch)
+  profile: { requests: 300, windowMs: 60 * 1000 }, // 300 per minute (avatar/displayname)
 };
 
 function getRateLimitType(path: string, method: string): string {
@@ -32,6 +34,8 @@ function getRateLimitType(path: string, method: string): string {
   if (path.includes('/_matrix/federation') || path.includes('/_matrix/key')) return 'federation';
   if (path.includes('/createRoom') && method === 'POST') return 'create_room';
   if (path.match(/\/rooms\/[^/]+\/send/) && method === 'PUT') return 'send_message';
+  if (path.match(/\/rooms\/[^/]+\/messages/)) return 'room_messages';
+  if (path.includes('/profile/')) return 'profile';
   return 'default';
 }
 
