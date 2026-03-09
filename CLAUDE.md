@@ -73,6 +73,7 @@ npm run db:migrate:local # Run D1 migrations (local)
 LIBSQL_URL=http://localhost:8080 bun test tests/
 ```
 
-## Git Commit Rules
+## Git Rules
 
+- Always push to `origin` (`summersmile1984/matrix-workers`), never push to `upstream` (`nkuntz1934/matrix-workers`).
 - Never include Claude attribution (e.g., `Co-Authored-By`) in commit messages.

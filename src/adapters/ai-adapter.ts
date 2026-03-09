@@ -1,7 +1,7 @@
-// AI Adapter for Chutes AI (or any OpenAI-compatible endpoint)
+// LLM Adapter for unified LLM gateway (or any OpenAI-compatible endpoint)
 // Implements a subset of the Cloudflare Workers AI interface
 
-export class ChutesAIAdapter {
+export class LLMAdapter {
     private apiKey: string;
     private baseUrl: string;
 
@@ -18,7 +18,7 @@ export class ChutesAIAdapter {
         let payload: any = {};
 
         // Force the use of the user's preferred model or fallback to provided model
-        const targetModel = 'MiniMaxAI/MiniMax-M2.5-TEE';
+        const targetModel = process.env.LLM_MODEL || 'kimi-k2.5';
 
         // Heuristics to determine if this is an embedding request or a chat completion request
         if (typeof inputs.text === 'string' || Array.isArray(inputs.text)) {

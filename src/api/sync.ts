@@ -13,6 +13,7 @@ import { getToDeviceMessages } from './to-device';
 import {
   getGlobalAccountData,
   getRoomAccountData,
+  getAccountDataStreamPosition,
 } from './account-data';
 import { getReceiptsForRoom } from './receipts';
 import { getTypingUsers } from './typing';
@@ -180,7 +181,7 @@ async function getUnusedFallbackKeyTypes(
 async function getDeviceListChanges(
   db: D1Database,
   userId: string,
-  sincePosition: number
+  sinceDeviceKeys: number
 ): Promise<{ changed: string[]; left: string[] }> {
   // Get users in shared rooms whose device keys have changed
   // Note: We now include the user's own changes as well, because
@@ -196,7 +197,7 @@ async function getDeviceListChanges(
         WHERE rm1.user_id = ? AND rm1.membership = 'join'
           AND rm2.user_id = dkc.user_id AND rm2.membership = 'join'
       )
-  `).bind(sincePosition, userId, userId).all<{ user_id: string }>();
+  `).bind(sinceDeviceKeys, userId, userId).all<{ user_id: string }>();
 
   // Check if the user's own keys have changed (for cross-signing signatures)
   const selfChanged = await db.prepare(`
@@ -204,7 +205,7 @@ async function getDeviceListChanges(
     FROM device_key_changes dkc
     WHERE dkc.stream_position > ?
       AND dkc.user_id = ?
-  `).bind(sincePosition, userId).first<{ count: number }>();
+  `).bind(sinceDeviceKeys, userId).first<{ count: number }>();
 
   const changedUsers = otherUsersChanged.results.map(row => row.user_id);
 
@@ -220,33 +221,53 @@ async function getDeviceListChanges(
   };
 }
 
+// Get current stream position for device_keys changes
+async function getDeviceKeysStreamPosition(db: D1Database): Promise<number> {
+  const result = await db.prepare(`
+    SELECT position FROM stream_positions WHERE stream_name = 'device_keys'
+  `).first<{ position: number }>();
+  return result?.position || 0;
+}
+
 const app = new Hono<AppEnv>();
 
 // GET /_matrix/client/v3/sync - Sync with server
-// Parse composite sync token: "s{events}_td{to_device}" or legacy plain number
-function parseSyncToken(token: string | undefined): { events: number; toDevice: number } {
+// Parse composite sync token: "s{events}_td{to_device}_ad{accountData}_dk{deviceKeys}"
+function parseSyncToken(token: string | undefined): { events: number; toDevice: number; accountData: number; deviceKeys: number } {
   if (!token) {
-    return { events: 0, toDevice: 0 };
+    return { events: 0, toDevice: 0, accountData: 0, deviceKeys: 0 };
   }
 
-  // Try composite format first: s84_td119
-  const match = token.match(/^s(\d+)_td(\d+)$/);
-  if (match) {
-    return { events: parseInt(match[1]), toDevice: parseInt(match[2]) };
+  // Try newest format: s84_td119_ad5_dk3
+  const match4 = token.match(/^s(\d+)_td(\d+)_ad(\d+)_dk(\d+)$/);
+  if (match4) {
+    return { events: parseInt(match4[1]), toDevice: parseInt(match4[2]), accountData: parseInt(match4[3]), deviceKeys: parseInt(match4[4]) };
+  }
+
+  // Try previous format: s84_td119_ad5 (no device_keys position)
+  const match3 = token.match(/^s(\d+)_td(\d+)_ad(\d+)$/);
+  if (match3) {
+    return { events: parseInt(match3[1]), toDevice: parseInt(match3[2]), accountData: parseInt(match3[3]), deviceKeys: 0 };
+  }
+
+  // Try old composite format: s84_td119 (no account_data or device_keys position)
+  const match2 = token.match(/^s(\d+)_td(\d+)$/);
+  if (match2) {
+    return { events: parseInt(match2[1]), toDevice: parseInt(match2[2]), accountData: 0, deviceKeys: 0 };
   }
 
   // Legacy format: plain number (use for both streams for backwards compat)
   const num = parseInt(token);
   if (!isNaN(num)) {
-    return { events: num, toDevice: num };
+    return { events: num, toDevice: num, accountData: 0, deviceKeys: 0 };
   }
 
-  return { events: 0, toDevice: 0 };
+  return { events: 0, toDevice: 0, accountData: 0, deviceKeys: 0 };
 }
 
 // Build composite sync token
-function buildSyncToken(eventsPos: number, toDevicePos: number): string {
-  return `s${eventsPos}_td${toDevicePos}`;
+function buildSyncToken(eventsPos: number, toDevicePos: number, accountDataPos: number, deviceKeysPos: number): string {
+  return `s${eventsPos}_td${toDevicePos}_ad${accountDataPos}_dk${deviceKeysPos}`;
 }
 
 app.get('/_matrix/client/v3/sync', requireAuth(), async (c) => {
@@ -264,11 +285,13 @@ app.get('/_matrix/client/v3/sync', requireAuth(), async (c) => {
     console.log('[sync] Using no filter (filter not found or invalid)');
   }
 
-  // Parse composite sync token (separate positions for events and to-device)
-  const { events: sincePosition, toDevice: sinceToDevice } = parseSyncToken(since);
+  // Parse composite sync token (separate positions for events, to-device, account-data, and device-keys)
+  const { events: sincePosition, toDevice: sinceToDevice, accountData: sinceAccountData, deviceKeys: sinceDeviceKeys } = parseSyncToken(since);
 
-  // Get current position
+  // Get current positions for each stream
   const currentPosition = await getLatestStreamPosition(c.env.DB);
+  const currentAccountDataPos = await getAccountDataStreamPosition(c.env.DB);
+  const currentDeviceKeysPos = await getDeviceKeysStreamPosition(c.env.DB);
 
   // Track to-device position for next_batch
   let currentToDevicePos = sinceToDevice;
@@ -322,7 +345,7 @@ app.get('/_matrix/client/v3/sync', requireAuth(), async (c) => {
 
   // Get device list changes (users whose keys have changed since last sync)
   if (sincePosition > 0) {
-    const deviceListChanges = await getDeviceListChanges(c.env.DB, userId, sincePosition);
+    const deviceListChanges = await getDeviceListChanges(c.env.DB, userId, sinceDeviceKeys);
     if (deviceListChanges.changed.length > 0 || deviceListChanges.left.length > 0) {
       response.device_lists = deviceListChanges;
     }
@@ -343,11 +366,25 @@ app.get('/_matrix/client/v3/sync', requireAuth(), async (c) => {
   let globalAccountData = await getGlobalAccountData(
     c.env.DB,
     userId,
-    sincePosition > 0 ? sincePosition : undefined
+    sinceAccountData > 0 ? sinceAccountData : undefined
   );
+  // Debug: log account data before filter
+  if (globalAccountData.some(e => e.type.startsWith('m.cross_signing.'))) {
+    console.log('[sync] PRE-FILTER has cross-signing:', globalAccountData.filter(e => e.type.startsWith('m.cross_signing.')).map(e => e.type));
+  }
   // Apply account_data filter to global account data
   globalAccountData = applyEventFilter(globalAccountData, filter?.account_data);
+  if (filter?.account_data) {
+    console.log('[sync] account_data filter:', JSON.stringify(filter.account_data));
+  }
   response.account_data!.events = globalAccountData;
+
+  // Debug: log cross-signing secrets content to verify structure
+  for (const ad of globalAccountData) {
+    if (ad.type.startsWith('m.cross_signing.')) {
+      console.log('[sync] Account data', ad.type, 'content:', JSON.stringify(ad.content));
+    }
+  }
 
   // Debug: Log global account_data that will be returned (for initial sync)
   if (sincePosition === 0) {
@@ -438,7 +475,7 @@ app.get('/_matrix/client/v3/sync', requireAuth(), async (c) => {
       c.env.DB,
       userId,
       roomId,
-      sincePosition > 0 ? sincePosition : undefined
+      sinceAccountData > 0 ? sinceAccountData : undefined
     );
     // Apply account_data filter to room account data
     roomAccountData = applyEventFilter(roomAccountData, filter?.room?.account_data);
@@ -586,7 +623,7 @@ app.get('/_matrix/client/v3/sync', requireAuth(), async (c) => {
 
   // Build composite next_batch token with separate positions for each stream
   if (!response.next_batch) {
-    response.next_batch = buildSyncToken(currentPosition, currentToDevicePos);
+    response.next_batch = buildSyncToken(currentPosition, currentToDevicePos, currentAccountDataPos, currentDeviceKeysPos);
   }
 
   return c.json(response);

@@ -141,10 +141,29 @@ app.get('/admin/api/users', requireAuth(), requireAdmin, async (c) => {
     FROM users
   `;
   const params: any[] = [];
+  const filters: string[] = [];
 
   if (search) {
-    query += ' WHERE localpart LIKE ? OR display_name LIKE ?';
+    filters.push('(localpart LIKE ? OR display_name LIKE ?)');
     params.push(`%${search}%`, `%${search}%`);
+  }
+
+  const deactivated = c.req.query('deactivated');
+  if (deactivated === 'true') {
+    filters.push('is_deactivated = 1');
+  } else if (deactivated === 'false') {
+    filters.push('is_deactivated = 0');
+  }
+
+  const adminQuery = c.req.query('admin');
+  if (adminQuery === 'true') {
+    filters.push('admin = 1');
+  } else if (adminQuery === 'false') {
+    filters.push('admin = 0');
+  }
+
+  if (filters.length > 0) {
+    query += ' WHERE ' + filters.join(' AND ');
   }
 
   query += ' ORDER BY created_at DESC LIMIT ? OFFSET ?';
@@ -154,11 +173,17 @@ app.get('/admin/api/users', requireAuth(), requireAdmin, async (c) => {
 
   // Get total count
   let countQuery = 'SELECT COUNT(*) as count FROM users';
-  if (search) {
-    countQuery += ' WHERE localpart LIKE ? OR display_name LIKE ?';
+  const countParams: any[] = [];
+
+  if (filters.length > 0) {
+    countQuery += ' WHERE ' + filters.join(' AND ');
+    if (search) {
+      countParams.push(`%${search}%`, `%${search}%`);
+    }
   }
-  const total = search
-    ? await db.prepare(countQuery).bind(`%${search}%`, `%${search}%`).first<{ count: number }>()
+
+  const total = countParams.length > 0
+    ? await db.prepare(countQuery).bind(...countParams).first<{ count: number }>()
     : await db.prepare(countQuery).first<{ count: number }>();
 
   return c.json({
@@ -295,6 +320,84 @@ app.post('/admin/api/users/:userId/reset-password', requireAuth(), requireAdmin,
   await db.prepare('DELETE FROM access_tokens WHERE user_id = ?').bind(userId).run();
 
   return c.json({ success: true });
+});
+
+// GET /admin/api/users/:userId/idp-link - Get user's IDP link (external identity)
+// Returns the IDP provider and external_id (sub claim) for a Matrix user.
+// Used by the bridge to resolve the IDP identity behind a Matrix userId.
+app.get('/admin/api/users/:userId/idp-link', requireAuth(), requireAdmin, async (c) => {
+  const userId = decodeURIComponent(c.req.param('userId'));
+  const db = c.env.DB;
+
+  const link = await db.prepare(`
+    SELECT provider_id, external_id, external_email, external_name, last_login_at
+    FROM idp_user_links
+    WHERE user_id = ?
+    ORDER BY last_login_at DESC
+    LIMIT 1
+  `).bind(userId).first<{
+    provider_id: string;
+    external_id: string;
+    external_email: string | null;
+    external_name: string | null;
+    last_login_at: number | null;
+  }>();
+
+  if (!link) {
+    return c.json({ linked: false, user_id: userId });
+  }
+
+  return c.json({
+    linked: true,
+    user_id: userId,
+    provider_id: link.provider_id,
+    external_id: link.external_id,
+    external_email: link.external_email,
+    external_name: link.external_name,
+    last_login_at: link.last_login_at,
+  });
+});
+
+// PUT /admin/api/users/:userId/idp-link - Create or update IDP link
+// Upserts a mapping between a Matrix user and their IDP external identity.
+// Idempotent: safe to call multiple times with the same data.
+app.put('/admin/api/users/:userId/idp-link', requireAuth(), requireAdmin, async (c) => {
+  const userId = decodeURIComponent(c.req.param('userId'));
+  const db = c.env.DB;
+
+  let body: any;
+  try {
+    body = await c.req.json();
+  } catch {
+    return Errors.badJson().toResponse();
+  }
+
+  const { provider_id, external_id, external_email, external_name } = body;
+  if (!provider_id || !external_id) {
+    return Errors.missingParam('provider_id and external_id are required').toResponse();
+  }
+
+  try {
+    // Delete any existing link for this user + provider, then insert fresh
+    await db.prepare(
+      'DELETE FROM idp_user_links WHERE user_id = ? AND provider_id = ?'
+    ).bind(userId, provider_id).run();
+
+    await db.prepare(`
+      INSERT INTO idp_user_links (provider_id, external_id, user_id, external_email, external_name, last_login_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).bind(provider_id, external_id, userId, external_email || null, external_name || null, Date.now()).run();
+
+    return c.json({
+      success: true,
+      user_id: userId,
+      provider_id,
+      external_id,
+    });
+  } catch (err: any) {
+    console.error('[admin] PUT idp-link error:', err);
+    return c.json({ errcode: 'M_UNKNOWN', error: err?.message || 'Failed to upsert IDP link' }, 500);
+  }
 });
 
 // GET /admin/api/rooms - List all rooms

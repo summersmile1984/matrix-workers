@@ -10,6 +10,8 @@ import {
   exchangeCodeForTokens,
   validateIDToken,
   generateRandomString,
+  generateCodeVerifier,
+  generateCodeChallenge,
   deriveUsername,
 } from '../services/oidc';
 import { formatUserId } from '../utils/ids';
@@ -20,6 +22,26 @@ import { requireAuth } from '../middleware/auth';
 import { generateOpaqueId } from '../utils/ids';
 
 const app = new Hono<AppEnv>();
+
+// Build an IdPProvider from env vars (no DB involved)
+function getEnvIdpProvider(env: any): IdPProvider | null {
+  if (!env.IDP_ISSUER_URL || !env.IDP_CLIENT_ID || !env.IDP_CLIENT_SECRET) {
+    return null;
+  }
+  return {
+    id: 'matrix-idp',
+    name: 'Matrix IdP',
+    issuer_url: env.IDP_ISSUER_URL,
+    client_id: env.IDP_CLIENT_ID,
+    client_secret_encrypted: '', // not used — secret comes from env
+    scopes: 'openid profile email',
+    enabled: 1,
+    auto_create_users: 1,
+    username_claim: 'email',
+    display_order: 0,
+    icon_url: null,
+  };
+}
 
 interface IdPProvider {
   id: string;
@@ -49,6 +71,7 @@ interface OAuthState {
   nonce: string;
   redirectUri: string;
   returnTo?: string;
+  codeVerifier?: string;
 }
 
 // Version byte for encrypted secrets
@@ -145,21 +168,37 @@ async function decryptSecret(
 app.get('/auth/oidc/providers', async (c) => {
   const db = c.env.DB;
 
+  // Start with env-based IDP provider (if configured)
+  const envIdp = getEnvIdpProvider(c.env);
+  const providers: { id: string; name: string; icon_url: string | null; login_url: string }[] = [];
+
+  if (envIdp) {
+    providers.push({
+      id: envIdp.id,
+      name: envIdp.name,
+      icon_url: envIdp.icon_url,
+      login_url: `/auth/oidc/${envIdp.id}/login`,
+    });
+  }
+
+  // Add DB-stored providers (excluding matrix-idp to avoid duplicates)
   const result = await db.prepare(`
     SELECT id, name, icon_url, display_order
     FROM idp_providers
-    WHERE enabled = 1
+    WHERE enabled = 1 AND id != 'matrix-idp'
     ORDER BY display_order ASC, name ASC
   `).all<{ id: string; name: string; icon_url: string | null; display_order: number }>();
 
-  return c.json({
-    providers: result.results.map(p => ({
+  for (const p of result.results) {
+    providers.push({
       id: p.id,
       name: p.name,
       icon_url: p.icon_url,
       login_url: `/auth/oidc/${p.id}/login`,
-    })),
-  });
+    });
+  }
+
+  return c.json({ providers });
 });
 
 // GET /auth/oidc/:providerId/login - Initiate OAuth flow
@@ -168,10 +207,15 @@ app.get('/auth/oidc/:providerId/login', async (c) => {
   const returnTo = c.req.query('return_to') || '/';
   const db = c.env.DB;
 
-  // Get provider config
-  const provider = await db.prepare(`
-    SELECT * FROM idp_providers WHERE id = ? AND enabled = 1
-  `).bind(providerId).first<IdPProvider>();
+  // Get provider config: env-based for matrix-idp, DB for others
+  let provider: IdPProvider | null = null;
+  if (providerId === 'matrix-idp') {
+    provider = getEnvIdpProvider(c.env);
+  } else {
+    provider = await db.prepare(`
+      SELECT * FROM idp_providers WHERE id = ? AND enabled = 1
+    `).bind(providerId).first<IdPProvider>();
+  }
 
   if (!provider) {
     return c.json({ errcode: 'M_NOT_FOUND', error: 'Identity provider not found' }, 404);
@@ -185,9 +229,13 @@ app.get('/auth/oidc/:providerId/login', async (c) => {
     const state = generateRandomString(32);
     const nonce = generateRandomString(32);
 
+    // Generate PKCE code verifier and challenge (RFC 7636)
+    const codeVerifier = generateCodeVerifier();
+    const codeChallenge = await generateCodeChallenge(codeVerifier);
+
     // Build redirect URI
     const host = c.req.header('host') || c.env.SERVER_NAME;
-    const protocol = c.req.url.startsWith('https') ? 'https' : 'https';
+    const protocol = c.req.url.startsWith('https') ? 'https' : 'http';
     const redirectUri = `${protocol}://${host}/auth/oidc/${providerId}/callback`;
 
     // Store state in KV (expires in 10 minutes)
@@ -196,6 +244,7 @@ app.get('/auth/oidc/:providerId/login', async (c) => {
       nonce,
       redirectUri,
       returnTo,
+      codeVerifier,
     };
     await c.env.SESSIONS.put(`oidc_state:${state}`, JSON.stringify(stateData), {
       expirationTtl: 600,
@@ -208,7 +257,9 @@ app.get('/auth/oidc/:providerId/login', async (c) => {
       redirectUri,
       provider.scopes,
       state,
-      nonce
+      nonce,
+      codeChallenge,
+      'S256'
     );
 
     return c.redirect(authUrl);
@@ -252,10 +303,15 @@ app.get('/auth/oidc/:providerId/callback', async (c) => {
     return c.html(generateErrorPage('Invalid State', 'Provider mismatch'));
   }
 
-  // Get provider config
-  const provider = await db.prepare(`
-    SELECT * FROM idp_providers WHERE id = ? AND enabled = 1
-  `).bind(providerId).first<IdPProvider>();
+  // Get provider config: env-based for matrix-idp, DB for others
+  let provider: IdPProvider | null = null;
+  if (providerId === 'matrix-idp') {
+    provider = getEnvIdpProvider(c.env);
+  } else {
+    provider = await db.prepare(`
+      SELECT * FROM idp_providers WHERE id = ? AND enabled = 1
+    `).bind(providerId).first<IdPProvider>();
+  }
 
   if (!provider) {
     return c.html(generateErrorPage('Provider Not Found', 'Identity provider not found or disabled'));
@@ -266,22 +322,31 @@ app.get('/auth/oidc/:providerId/callback', async (c) => {
     const discovery = await fetchOIDCDiscovery(provider.issuer_url);
     const jwks = await fetchJWKS(discovery.jwks_uri);
 
-    // Decrypt client secret
-    const clientSecret = await decryptSecret(provider.client_secret_encrypted, c.env);
+    // Get client secret: env var for matrix-idp, decrypt for DB providers
+    let clientSecret: string;
+    if (providerId === 'matrix-idp') {
+      clientSecret = c.env.IDP_CLIENT_SECRET!;
+    } else {
+      clientSecret = await decryptSecret(provider.client_secret_encrypted, c.env);
+    }
+    console.log(`[OIDC] Token exchange: client_id=${provider.client_id}, secret_len=${clientSecret.length}`);
 
-    // Exchange code for tokens
+    // Exchange code for tokens (with PKCE code_verifier if present)
     const tokens = await exchangeCodeForTokens(
       discovery,
       provider.client_id,
       clientSecret,
       code,
-      stateData.redirectUri
+      stateData.redirectUri,
+      stateData.codeVerifier
     );
 
     // Validate ID token and extract claims
+    // Use discovery.issuer (the actual issuer from the discovery doc) for validation,
+    // which may differ from provider.issuer_url (our configured discovery URL)
     const claims = await validateIDToken(
       tokens.id_token,
-      provider.issuer_url,
+      discovery.issuer,
       provider.client_id,
       stateData.nonce,
       jwks
@@ -351,8 +416,15 @@ app.get('/auth/oidc/:providerId/callback', async (c) => {
     const tokenId = await generateOpaqueId(16);
     await createAccessToken(db, tokenId, tokenHash, userId, deviceId);
 
-    // Return success page with token (or redirect)
-    return c.html(generateSuccessPage(userId, accessToken, deviceId, c.env.SERVER_NAME, stateData.returnTo));
+    // If returnTo is set (e.g. /admin), redirect with token in URL fragment
+    // The fragment is never sent to the server, keeping the token client-side only
+    if (stateData.returnTo) {
+      const fragment = `sso_token=${encodeURIComponent(accessToken)}&sso_user_id=${encodeURIComponent(userId)}&sso_device_id=${encodeURIComponent(deviceId)}`;
+      return c.redirect(`${stateData.returnTo}#${fragment}`);
+    }
+
+    // Otherwise show the success page with credentials
+    return c.html(generateSuccessPage(userId, accessToken, deviceId, c.env.SERVER_NAME));
 
   } catch (err) {
     console.error('OIDC callback error:', err);
@@ -445,23 +517,63 @@ Device ID: ${deviceId}\`;
 // Returns information about supported authentication methods (MSC2965 / Matrix v1.17)
 // This is the STABLE endpoint as of Matrix v1.17
 app.get('/_matrix/client/v1/auth_metadata', async (c) => {
+  const idpUrl = c.env.IDP_ISSUER_URL;
+
+  // When IDP-SERVER is configured, build auth metadata from IDP discovery
+  if (idpUrl) {
+    try {
+      const resp = await fetch(`${idpUrl}/.well-known/openid-configuration`, {
+        headers: { 'Accept': 'application/json' },
+      });
+      if (resp.ok) {
+        const discovery = await resp.json() as Record<string, unknown>;
+        return c.json({
+          issuer: discovery.issuer,
+          authorization_endpoint: discovery.authorization_endpoint,
+          token_endpoint: discovery.token_endpoint,
+          revocation_endpoint: discovery.revocation_endpoint,
+          registration_endpoint: discovery.registration_endpoint,
+          response_types_supported: discovery.response_types_supported || ['code'],
+          response_modes_supported: discovery.response_modes_supported || ['query', 'fragment'],
+          grant_types_supported: discovery.grant_types_supported || ['authorization_code', 'refresh_token'],
+          code_challenge_methods_supported: discovery.code_challenge_methods_supported || ['S256'],
+          token_endpoint_auth_methods_supported: [
+            ...((discovery.token_endpoint_auth_methods_supported as string[]) || ['client_secret_basic']),
+            ...(!((discovery.token_endpoint_auth_methods_supported as string[]) || []).includes('none') ? ['none'] : []),
+          ],
+          scopes_supported: [
+            ...(discovery.scopes_supported as string[] || ['openid', 'profile', 'email']),
+            'urn:matrix:org.matrix.msc2967.client:api:*',
+            'urn:matrix:org.matrix.msc2967.client:device:*',
+          ],
+          account_management_uri: `${idpUrl}/account`,
+          account_management_actions_supported: [
+            'org.matrix.profile',
+            'org.matrix.sessions_list',
+            'org.matrix.session_view',
+            'org.matrix.session_end',
+          ],
+          prompt_values_supported: discovery.prompt_values_supported || ['login', 'consent', 'create'],
+        });
+      }
+    } catch (err) {
+      console.error('[OIDC] Failed to proxy auth_metadata from IDP-SERVER:', err);
+    }
+  }
+
+  // Fallback: local OAuth provider (no IDP configured)
   const serverName = c.env.SERVER_NAME;
   const baseUrl = `https://${serverName}`;
 
-  // Return proper OIDC metadata for this server acting as its own OIDC provider
-  // This is required for Element Web OIDC-native authentication to work
-  // All fields must be present for Element Web to accept the configuration
-  const response = {
+  return c.json({
     issuer: baseUrl,
     authorization_endpoint: `${baseUrl}/oauth/authorize`,
     token_endpoint: `${baseUrl}/oauth/token`,
     revocation_endpoint: `${baseUrl}/oauth/revoke`,
     registration_endpoint: `${baseUrl}/oauth/register`,
-    // Required capabilities
     response_types_supported: ['code'],
     grant_types_supported: ['authorization_code', 'refresh_token'],
     code_challenge_methods_supported: ['S256', 'plain'],
-    // Additional optional fields that Element Web may check
     token_endpoint_auth_methods_supported: ['client_secret_basic', 'client_secret_post', 'none'],
     scopes_supported: [
       'openid',
@@ -470,25 +582,17 @@ app.get('/_matrix/client/v1/auth_metadata', async (c) => {
       'urn:matrix:org.matrix.msc2967.client:api:*',
       'urn:matrix:org.matrix.msc2967.client:device:*',
     ],
-    // Matrix authentication service extension (MSC3861/MSC4191)
-    // account_management_uri is where users can manage their account
     account_management_uri: `${baseUrl}/admin`,
-    // Supported account management actions per MSC4191
-    // Element X uses these to determine what features are available
     account_management_actions_supported: [
-      'org.matrix.profile',              // View/edit profile
-      'org.matrix.sessions_list',        // View list of sessions  
-      'org.matrix.session_view',         // View details of a specific session
-      'org.matrix.session_end',          // End/logout a specific session
-      'org.matrix.cross_signing_reset',  // Reset cross-signing keys (identity reset)
+      'org.matrix.profile',
+      'org.matrix.sessions_list',
+      'org.matrix.session_view',
+      'org.matrix.session_end',
+      'org.matrix.cross_signing_reset',
     ],
-    // Device authorization endpoint for QR code login (MSC4108)
     device_authorization_endpoint: `${baseUrl}/oauth/device`,
-    // Prompt values we support
     prompt_values_supported: ['create'],
-  };
-
-  return c.json(response);
+  });
 });
 
 // ============================================

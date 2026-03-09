@@ -45,6 +45,11 @@ export interface Env {
   // Set with: npx wrangler secret put OIDC_ENCRYPTION_KEY
   OIDC_ENCRYPTION_KEY?: string;
 
+  // IDP-SERVER (external IdP for SSO login)
+  IDP_ISSUER_URL?: string;       // e.g. http://localhost:4000
+  IDP_CLIENT_ID?: string;        // OAuth client ID registered in IDP-SERVER
+  IDP_CLIENT_SECRET?: string;    // OAuth client secret (plaintext, encrypted at runtime)
+
   // Cloudflare TURN Server Configuration
   TURN_KEY_ID?: string;
   TURN_API_TOKEN?: string;

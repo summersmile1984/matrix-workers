@@ -2538,6 +2538,21 @@ export const adminDashboardHtml = (serverName: string) => `
     let pendingGotoKey = null;
     let gotoKeyTimeout = null;
 
+    // Check for SSO token in URL fragment (from IDP redirect)
+    if (window.location.hash) {
+      const hashParams = new URLSearchParams(window.location.hash.substring(1));
+      const ssoToken = hashParams.get('sso_token');
+      const ssoUserId = hashParams.get('sso_user_id');
+      if (ssoToken && ssoUserId) {
+        accessToken = ssoToken;
+        currentUserId = ssoUserId;
+        localStorage.setItem('admin_token', accessToken);
+        localStorage.setItem('admin_user_id', currentUserId);
+        // Clean URL fragment
+        history.replaceState(null, '', window.location.pathname);
+      }
+    }
+
     // Check if logged in
     if (accessToken) {
       showApp();

@@ -17,6 +17,7 @@ import { Hono } from 'hono';
 import type { AppEnv, Env } from '../types';
 import { Errors } from '../utils/errors';
 import { requireAuth } from '../middleware/auth';
+import { generateOpaqueId } from '../utils/ids';
 
 const app = new Hono<AppEnv>();
 
@@ -96,8 +97,8 @@ async function recordAccountDataChange(
 // Helper to check if event type should use KV for faster access
 function isKVAccountData(eventType: string): boolean {
   return eventType.startsWith('m.secret_storage') ||
-         eventType.startsWith('m.cross_signing') ||
-         eventType === 'm.megolm_backup.v1';
+    eventType.startsWith('m.cross_signing') ||
+    eventType === 'm.megolm_backup.v1';
 }
 
 // GET /_matrix/client/v3/user/:userId/account_data/:type
@@ -246,6 +247,23 @@ app.put('/_matrix/client/v3/user/:userId/account_data/:type', requireAuth(), asy
   // Record change for sync
   await recordAccountDataChange(db, targetUserId, '', eventType);
 
+  // Notify SyncDO to wake up long-polling sync requests
+  try {
+    const syncDO = c.env.SYNC.get(c.env.SYNC.idFromName(targetUserId));
+    await syncDO.fetch(new Request('http://internal/notify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        event_id: `$account_data_${await generateOpaqueId(8)}`,
+        room_id: '',
+        type: eventType,
+        timestamp: Date.now(),
+      }),
+    }));
+  } catch (err) {
+    console.error('[account_data] Failed to notify SyncDO:', err);
+  }
+
   return c.json({});
 });
 
@@ -348,6 +366,23 @@ app.put('/_matrix/client/v3/user/:userId/rooms/:roomId/account_data/:type', requ
   // Record change for sync
   await recordAccountDataChange(db, targetUserId, roomId, eventType);
 
+  // Notify SyncDO to wake up long-polling sync requests
+  try {
+    const syncDO = c.env.SYNC.get(c.env.SYNC.idFromName(targetUserId));
+    await syncDO.fetch(new Request('http://internal/notify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        event_id: `$account_data_${await generateOpaqueId(8)}`,
+        room_id: roomId,
+        type: eventType,
+        timestamp: Date.now(),
+      }),
+    }));
+  } catch (err) {
+    console.error('[account_data] Failed to notify SyncDO:', err);
+  }
+
   return c.json({});
 });
 
@@ -388,6 +423,27 @@ export async function getGlobalAccountData(
     event_type: string;
     content: string;
   }>();
+
+  // Debug: log account data query results
+  if (since !== undefined && results.results.length > 0) {
+    console.log('[account_data] getGlobalAccountData since:', since, 'returned:', results.results.length, 'types:', results.results.map(r => r.event_type));
+  } else if (since !== undefined) {
+    // Also check what changes exist in the changes table
+    const changesCheck = await db.prepare(`
+      SELECT event_type, stream_position FROM account_data_changes
+      WHERE user_id = ? AND room_id = '' AND stream_position > ?
+      ORDER BY stream_position DESC LIMIT 10
+    `).bind(userId, since).all<{ event_type: string; stream_position: number }>();
+
+    const dataCheck = await db.prepare(`
+      SELECT event_type FROM account_data
+      WHERE user_id = ? AND room_id = '' AND event_type LIKE 'm.cross_signing%'
+    `).bind(userId).all<{ event_type: string }>();
+
+    console.log('[account_data] getGlobalAccountData since:', since, 'returned: 0',
+      'changes_exist:', changesCheck.results.length > 0 ? changesCheck.results.map(r => `${r.event_type}@${r.stream_position}`) : 'none',
+      'cross_signing_in_ad:', dataCheck.results.length > 0 ? dataCheck.results.map(r => r.event_type) : 'none');
+  }
 
   return results.results.map(row => ({
     type: row.event_type,

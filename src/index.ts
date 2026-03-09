@@ -205,6 +205,9 @@ app.get('/synapse-admin/:path{.+}', async (c) => {
 app.route('/', oidcAuth);
 
 // OAuth 2.0 provider endpoints
+// Note: Most OAuth flows are handled by IDP-SERVER when configured.
+// However, the UIA approval page (/oauth/authorize/uia) for cross-signing
+// reset must still be served by the homeserver.
 app.route('/', oauth);
 
 // Matrix version discovery

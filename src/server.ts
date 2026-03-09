@@ -43,7 +43,7 @@ import { RateLimitDurableObject } from './durable-objects/RateLimitDurableObject
 import { CallRoomDurableObject } from './durable-objects/call-room';
 
 import { ResendEmailAdapter } from './adapters/email-adapter';
-import { ChutesAIAdapter } from './adapters/ai-adapter';
+import { LLMAdapter } from './adapters/ai-adapter';
 
 // ── Validate required env vars ────────────────────────────────────────────────
 
@@ -116,6 +116,9 @@ const env: any = {
     TURN_KEY_ID: process.env.TURN_KEY_ID,
     TURN_API_TOKEN: process.env.TURN_API_TOKEN,
     OIDC_ENCRYPTION_KEY: process.env.OIDC_ENCRYPTION_KEY,
+    IDP_ISSUER_URL: process.env.IDP_ISSUER_URL,
+    IDP_CLIENT_ID: process.env.IDP_CLIENT_ID,
+    IDP_CLIENT_SECRET: process.env.IDP_CLIENT_SECRET,
     APNS_KEY_ID: process.env.APNS_KEY_ID,
     APNS_TEAM_ID: process.env.APNS_TEAM_ID,
     APNS_PRIVATE_KEY: process.env.APNS_PRIVATE_KEY,
@@ -147,7 +150,7 @@ const env: any = {
         }
     } : null,
     ANALYTICS: null,   // CF Analytics Engine — not available
-    AI: process.env.CHUTES_API_KEY && process.env.CHUTES_API_URL ? new ChutesAIAdapter(process.env.CHUTES_API_KEY, process.env.CHUTES_API_URL) : null,   // Chutes AI adapter
+    AI: process.env.LLM_API_KEY && process.env.LLM_BASE_URL ? new LLMAdapter(process.env.LLM_API_KEY, process.env.LLM_BASE_URL) : null,   // Unified LLM adapter
     EMAIL: process.env.RESEND_API_KEY ? new ResendEmailAdapter(process.env.RESEND_API_KEY) : null,   // Replaced with Resend HTTP API adapter
     BROWSER: null,   // Browser Rendering — not available
 };
@@ -178,7 +181,7 @@ env.STATE_COMPACTION_WORKFLOW = createMastraWorkflowBinding(mastra, 'stateCompac
 const port = parseInt(process.env.PORT || '8787', 10);
 
 // @ts-ignore — Bun global
-Bun.serve({ port, fetch: (req: Request) => app.fetch(req, env) });
+Bun.serve({ port, idleTimeout: 60, fetch: (req: Request) => app.fetch(req, env) });
 
 console.log(`[matrix-workers] Self-hosted server listening on http://0.0.0.0:${port}`);
 console.log(`[matrix-workers] SERVER_NAME  = ${env.SERVER_NAME}`);

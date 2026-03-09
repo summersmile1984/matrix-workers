@@ -57,6 +57,8 @@ function getClientId(c: Context<AppEnv>): string {
 
 // Rate limiter using Durable Objects
 export async function rateLimitMiddleware(c: Context<AppEnv>, next: Next) {
+  // Rate limiting disabled for local development
+  return next();
   const path = c.req.path;
   const method = c.req.method;
 

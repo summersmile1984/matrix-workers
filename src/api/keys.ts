@@ -632,7 +632,8 @@ app.post('/_matrix/client/v3/keys/device_signing/upload', requireAuth(), async (
     // Build available flows based on user's authentication method
     const flows: Array<{ stages: string[] }> = [];
     const serverName = c.env.SERVER_NAME;
-    const baseUrl = `https://${serverName}`;
+    const proto = c.req.header('x-forwarded-proto') || new URL(c.req.url).protocol.replace(':', '');
+    const baseUrl = `${proto}://${serverName}`;
     const params: Record<string, any> = {};
 
     if (userIsOIDC) {
@@ -1017,7 +1018,8 @@ app.get('/_matrix/client/v3/auth/m.login.sso/redirect', async (c) => {
 
   const session = JSON.parse(sessionJson);
   const serverName = c.env.SERVER_NAME;
-  const baseUrl = `https://${serverName}`;
+  const proto = c.req.header('x-forwarded-proto') || new URL(c.req.url).protocol.replace(':', '');
+  const baseUrl = `${proto}://${serverName}`;
 
   // Store the redirect URL for after SSO completes
   session.redirect_url = redirectUrl || `${baseUrl}/_matrix/client/v3/auth/m.login.sso/callback`;

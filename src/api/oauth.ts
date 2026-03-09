@@ -266,11 +266,11 @@ app.post('/oauth/authorize', async (c) => {
     // Get client name for error page
     const clientJson = await c.env.CACHE.get(`oauth_client:${authRequest.client_id}`);
     const clientName = clientJson ? JSON.parse(clientJson).client_name : 'Unknown Client';
-    
+
     // Re-create auth request for retry
     const newAuthRequestId = generateRandomString(16);
     await c.env.SESSIONS.put(`oauth_auth_request:${newAuthRequestId}`, JSON.stringify(authRequest), { expirationTtl: 600 });
-    
+
     return c.html(generateLoginPage(clientName, newAuthRequestId, c.env.SERVER_NAME, 'Invalid username or password'));
   }
 
@@ -278,10 +278,10 @@ app.post('/oauth/authorize', async (c) => {
   if (!passwordValid) {
     const clientJson = await c.env.CACHE.get(`oauth_client:${authRequest.client_id}`);
     const clientName = clientJson ? JSON.parse(clientJson).client_name : 'Unknown Client';
-    
+
     const newAuthRequestId = generateRandomString(16);
     await c.env.SESSIONS.put(`oauth_auth_request:${newAuthRequestId}`, JSON.stringify(authRequest), { expirationTtl: 600 });
-    
+
     return c.html(generateLoginPage(clientName, newAuthRequestId, c.env.SERVER_NAME, 'Invalid username or password'));
   }
 
@@ -420,7 +420,7 @@ app.post('/oauth/token', async (c) => {
     const accessToken = await generateAccessToken();
     const newRefreshToken = generateRandomString(32);
     const tokenId = await generateOpaqueId(16);
-    
+
     // Extract device ID from scope per MSC2967
     // Scope format: urn:matrix:org.matrix.msc2967.client:device:DEVICE_ID
     let deviceId: string | undefined;
@@ -431,12 +431,12 @@ app.post('/oauth/token', async (c) => {
         break;
       }
     }
-    
+
     // If no device ID in scope, generate one (fallback)
     if (!deviceId || deviceId === '*') {
       deviceId = await generateDeviceId();
     }
-    
+
     console.log('[oauth/token] Device ID from scope:', deviceId, 'scopes:', scopes);
 
     // Create device and access token in database
@@ -637,12 +637,12 @@ app.post('/oauth/introspect', async (c) => {
     try {
       // Decode the payload (second part) to extract claims
       const payload = JSON.parse(new TextDecoder().decode(base64UrlDecode(jwtParts[1])));
-      
+
       // Check if expired
       if (payload.exp && payload.exp < Math.floor(Date.now() / 1000)) {
         return c.json({ active: false });
       }
-      
+
       return c.json({
         active: true,
         sub: payload.sub,
@@ -869,14 +869,15 @@ app.get('/oauth/authorize/uia', async (c) => {
   // Determine what action is being requested
   let actionTitle = 'Approve Request';
   let actionDescription = 'An application is requesting your approval.';
-  
+
   if (action === 'org.matrix.cross_signing_reset') {
     actionTitle = 'Reset Encryption Keys';
     actionDescription = 'An application is requesting to reset your encryption identity. This will allow you to set up encryption again, but you may lose access to old encrypted messages.';
   }
 
-  // Generate approval page
-  return c.html(generateUiaApprovalPage(sessionId, session.user_id, actionTitle, actionDescription, serverName));
+  // Generate approval page - OIDC users don't need password
+  const isOidcUser = session.is_oidc_user === true;
+  return c.html(generateUiaApprovalPage(sessionId, session.user_id, actionTitle, actionDescription, serverName, undefined, isOidcUser));
 });
 
 // POST /oauth/authorize/uia - Handle approval
@@ -910,11 +911,29 @@ app.post('/oauth/authorize/uia', async (c) => {
     return c.html(generateUiaCancelledPage(serverName));
   }
 
-  // Validate credentials
+  const isOidcUser = session.is_oidc_user === true;
+
+  // For OIDC users, no password needed — identity already verified via OIDC
+  if (isOidcUser) {
+    // Mark as approved and show success
+    session.completed_stages = session.completed_stages || [];
+    const stagesToMark = ['org.matrix.cross_signing_reset', 'm.oauth', 'm.login.oauth'];
+    for (const stage of stagesToMark) {
+      if (!session.completed_stages.includes(stage)) {
+        session.completed_stages.push(stage);
+      }
+    }
+    session.oauth_completed_at = Date.now();
+    await c.env.CACHE.put(`uia_session:${sessionId}`, JSON.stringify(session), { expirationTtl: 300 });
+    console.log('[oauth/uia] OIDC user approved UIA for session:', sessionId, 'user:', session.user_id);
+    return c.html(generateUiaSuccessPage(sessionId as string, serverName));
+  }
+
+  // Validate credentials for password users
   if (!username || !password) {
     return c.html(generateUiaApprovalPage(
-      sessionId, 
-      session.user_id, 
+      sessionId,
+      session.user_id,
       'Reset Encryption Keys',
       'Please enter your credentials to approve this request.',
       serverName,
@@ -925,7 +944,7 @@ app.post('/oauth/authorize/uia', async (c) => {
   // Verify the credentials
   const db = c.env.DB;
   const userId = formatUserId(username, serverName);
-  
+
   // Check user exists
   const user = await getUserById(db, userId);
   if (!user) {
@@ -1022,15 +1041,16 @@ app.post('/oauth/authorize/uia', async (c) => {
 
 // Generate UIA approval page
 function generateUiaApprovalPage(
-  sessionId: string, 
-  userId: string, 
-  title: string, 
-  description: string, 
+  sessionId: string,
+  userId: string,
+  title: string,
+  description: string,
   serverName: string,
-  error?: string
+  error?: string,
+  isOidcUser: boolean = false
 ): string {
   const localpart = userId.split(':')[0].substring(1); // Extract localpart from @user:server
-  
+
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1160,6 +1180,7 @@ function generateUiaApprovalPage(
     <form method="POST" action="/oauth/authorize/uia">
       <input type="hidden" name="session" value="${escapeHtml(sessionId)}">
       
+      ${isOidcUser ? '' : `
       <div class="form-group">
         <label for="username">Username</label>
         <input type="text" id="username" name="username" placeholder="Enter your username" value="${escapeHtml(localpart)}" required autocomplete="username">
@@ -1169,6 +1190,7 @@ function generateUiaApprovalPage(
         <label for="password">Password</label>
         <input type="password" id="password" name="password" placeholder="Enter your password" required autocomplete="current-password" autofocus>
       </div>
+      `}
       
       <div class="buttons">
         <button type="submit" name="action" value="cancel" class="btn-secondary">Cancel</button>

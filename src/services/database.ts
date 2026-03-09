@@ -802,8 +802,13 @@ export async function notifyUsersOfEvent(
 
           // If no match on event fields, check room members against user namespaces
           // This covers the common case: @admin sends a message in a room with @test_hr
+          // Include both joined AND invited members — an AS should receive events
+          // for rooms where its users are invited (so it can auto-join).
           if (interested.length === 0) {
-            const roomMemberIds = members.results.map(m => m.user_id);
+            const allMembers = await env.DB.prepare(
+              `SELECT user_id FROM room_memberships WHERE room_id = ? AND membership IN ('join', 'invite')`
+            ).bind(roomId).all<{ user_id: string }>();
+            const roomMemberIds = allMembers.results.map(m => m.user_id);
             for (const as of appservices) {
               for (const ns of as.namespaces.users) {
                 const re = new RegExp(ns.regex);

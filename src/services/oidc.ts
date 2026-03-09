@@ -123,6 +123,33 @@ export async function fetchJWKS(jwksUri: string): Promise<JWKS> {
 }
 
 /**
+ * Generate a PKCE code verifier (RFC 7636)
+ */
+export function generateCodeVerifier(length: number = 64): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(length));
+  // Base64URL encode
+  return btoa(String.fromCharCode(...bytes))
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=/g, '')
+    .slice(0, 128);
+}
+
+/**
+ * Generate a PKCE code challenge (S256) from a verifier
+ */
+export async function generateCodeChallenge(verifier: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(verifier);
+  const hash = await crypto.subtle.digest('SHA-256', data);
+  const hashArray = new Uint8Array(hash);
+  return btoa(String.fromCharCode(...hashArray))
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=/g, '');
+}
+
+/**
  * Build the authorization URL for the OAuth flow
  */
 export function buildAuthorizationUrl(
@@ -131,7 +158,9 @@ export function buildAuthorizationUrl(
   redirectUri: string,
   scopes: string,
   state: string,
-  nonce: string
+  nonce: string,
+  codeChallenge?: string,
+  codeChallengeMethod?: string
 ): string {
   const params = new URLSearchParams({
     response_type: 'code',
@@ -141,6 +170,12 @@ export function buildAuthorizationUrl(
     state: state,
     nonce: nonce,
   });
+
+  // Add PKCE parameters if provided
+  if (codeChallenge) {
+    params.set('code_challenge', codeChallenge);
+    params.set('code_challenge_method', codeChallengeMethod || 'S256');
+  }
 
   return `${discovery.authorization_endpoint}?${params.toString()}`;
 }
@@ -153,20 +188,32 @@ export async function exchangeCodeForTokens(
   clientId: string,
   clientSecret: string,
   code: string,
-  redirectUri: string
+  redirectUri: string,
+  codeVerifier?: string
 ): Promise<OIDCTokenResponse> {
+  const params: Record<string, string> = {
+    grant_type: 'authorization_code',
+    code: code,
+    redirect_uri: redirectUri,
+  };
+
+  // Add PKCE code verifier if present
+  if (codeVerifier) {
+    params.code_verifier = codeVerifier;
+  }
+
+  // Use client_secret_basic authentication (RFC 6749 Section 2.3.1)
+  // Base64 encode client_id:client_secret for the Authorization header
+  const credentials = btoa(`${clientId}:${clientSecret}`);
+  console.log(`[OIDC] Token exchange: endpoint=${discovery.token_endpoint}, clientId=${clientId}, secretLen=${clientSecret.length}, secretPrefix=${clientSecret.substring(0, 8)}, base64Len=${credentials.length}`);
+
   const response = await fetch(discovery.token_endpoint, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/x-www-form-urlencoded',
+      'Authorization': `Basic ${credentials}`,
     },
-    body: new URLSearchParams({
-      grant_type: 'authorization_code',
-      code: code,
-      redirect_uri: redirectUri,
-      client_id: clientId,
-      client_secret: clientSecret,
-    }).toString(),
+    body: new URLSearchParams(params).toString(),
   });
 
   if (!response.ok) {
@@ -216,6 +263,9 @@ async function importJWK(jwk: JWK): Promise<CryptoKey> {
       name: 'ECDSA',
       namedCurve: curves[algorithm] || 'P-256',
     };
+  } else if (algorithm === 'EdDSA') {
+    // Ed25519 (OKP key type)
+    importAlgorithm = { name: 'Ed25519' };
   } else {
     throw new Error(`Unsupported algorithm: ${algorithm}`);
   }
@@ -273,6 +323,8 @@ async function verifyJWTSignature(token: string, jwks: JWKS): Promise<boolean> {
       name: 'ECDSA',
       hash: { name: `SHA-${algorithm.slice(-3)}` },
     };
+  } else if (algorithm === 'EdDSA') {
+    verifyAlgorithm = { name: 'Ed25519' };
   } else {
     throw new Error(`Unsupported algorithm: ${algorithm}`);
   }

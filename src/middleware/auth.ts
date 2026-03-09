@@ -34,23 +34,135 @@ export function extractAccessToken(request: Request): string | null {
   return null;
 }
 
+// In-memory cache for IDP-validated tokens (avoids introspection on every request)
+// Maps: raw token → { authContext, expiresAt }
+const idpTokenCache = new Map<string, { auth: AuthContext; expiresAt: number }>();
+const IDP_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
 // Validate access token and return user info
+// Dual-mode: checks local DB first, then IDP-SERVER introspect if configured
 export async function validateAccessToken(
-  db: D1Database,
+  env: any,
   token: string
 ): Promise<AuthContext | null> {
-  const tokenHash = await hashToken(token);
-  const result = await getUserByTokenHash(db, tokenHash);
-
-  if (!result) {
-    return null;
+  // 0. Check IDP token cache first
+  const cached = idpTokenCache.get(token);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.auth;
+  }
+  if (cached) {
+    idpTokenCache.delete(token); // expired
   }
 
-  return {
-    userId: result.userId,
-    deviceId: result.deviceId,
-    accessToken: token,
-  };
+  // 1. Try local DB first (existing tokens, password login, etc.)
+  const tokenHash = await hashToken(token);
+  const result = await getUserByTokenHash(env.DB, tokenHash);
+
+  if (result) {
+    return {
+      userId: result.userId,
+      deviceId: result.deviceId,
+      accessToken: token,
+    };
+  }
+
+  // 2. If IDP-SERVER is configured, try introspect
+  if (env.IDP_ISSUER_URL && env.IDP_CLIENT_ID && env.IDP_CLIENT_SECRET) {
+    try {
+      const introspectUrl = `${env.IDP_ISSUER_URL}/api/auth/oauth2/introspect`;
+      const credentials = btoa(`${env.IDP_CLIENT_ID}:${env.IDP_CLIENT_SECRET}`);
+      console.log(`[AUTH] Trying IDP introspect at ${introspectUrl}`);
+      const resp = await fetch(introspectUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'Authorization': `Basic ${credentials}`,
+        },
+        body: `token=${encodeURIComponent(token)}`,
+      });
+
+      const respText = await resp.text();
+      console.log(`[AUTH] IDP introspect response: ${resp.status} ${respText.slice(0, 500)}`);
+
+      let data: { active?: boolean; sub?: string; email?: string; scope?: string } | null = null;
+      try { data = JSON.parse(respText); } catch { /* not JSON */ }
+
+      if (data?.active && data?.sub) {
+        // Derive Matrix user ID from IDP sub/email
+        const serverName = env.SERVER_NAME;
+        let localpart = data.sub;
+
+        // If sub looks like an email, use the part before @
+        if (data.email) {
+          localpart = data.email.split('@')[0];
+        }
+
+        // Sanitize for Matrix user ID
+        localpart = localpart.toLowerCase().replace(/[^a-z0-9._=-]/g, '_');
+        const userId = `@${localpart}:${serverName}`;
+
+        // Auto-create local user if not exists
+        try {
+          const existing = await env.DB.prepare(
+            'SELECT user_id FROM users WHERE user_id = ?'
+          ).bind(userId).first();
+
+          if (!existing) {
+            await env.DB.prepare(
+              `INSERT INTO users (user_id, display_name, created_at) VALUES (?, ?, ?)`
+            ).bind(userId, data.email || localpart, Date.now()).run();
+            console.log(`[AUTH] Auto-created local user ${userId} from IDP`);
+          }
+        } catch (err) {
+          // Ignore if user already exists (race condition)
+          console.error('[AUTH] Auto-create user error (may be OK):', err);
+        }
+
+        // Auto-create device for OIDC tokens (Matrix SDK requires device_id)
+        // Derive a stable device ID from the token to avoid duplicates
+        const tokenHashBytes = new Uint8Array(
+          await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token))
+        );
+        const deviceId = 'OIDC_' + Array.from(tokenHashBytes.slice(0, 5))
+          .map(b => b.toString(16).padStart(2, '0')).join('').toUpperCase();
+
+        try {
+          const existingDevice = await env.DB.prepare(
+            'SELECT device_id FROM devices WHERE user_id = ? AND device_id = ?'
+          ).bind(userId, deviceId).first();
+
+          if (!existingDevice) {
+            await env.DB.prepare(
+              `INSERT INTO devices (user_id, device_id, display_name, created_at) VALUES (?, ?, ?, ?)`
+            ).bind(userId, deviceId, 'OIDC Login', Date.now()).run();
+            console.log(`[AUTH] Auto-created device ${deviceId} for user ${userId}`);
+          }
+        } catch (err) {
+          console.error('[AUTH] Auto-create device error (may be OK):', err);
+        }
+
+        const authResult: AuthContext = {
+          userId,
+          deviceId,
+          accessToken: token,
+        };
+
+        // Cache the result to avoid IDP introspection on every request
+        idpTokenCache.set(token, {
+          auth: authResult,
+          expiresAt: Date.now() + IDP_CACHE_TTL_MS,
+        });
+
+        return authResult;
+      }
+    } catch (err) {
+      console.error('[AUTH] IDP introspect error:', err);
+    }
+  } else {
+    console.log(`[AUTH] IDP introspect not configured. IDP_ISSUER_URL=${env.IDP_ISSUER_URL}, IDP_CLIENT_ID=${env.IDP_CLIENT_ID ? 'set' : 'unset'}, IDP_CLIENT_SECRET=${env.IDP_CLIENT_SECRET ? 'set' : 'unset'}`);
+  }
+
+  return null;
 }
 
 // Middleware that requires authentication
@@ -60,24 +172,21 @@ export function requireAuth() {
     const path = new URL(c.req.url).pathname;
 
     if (!token) {
-      // Log full headers for debugging missing token
       const authHeader = c.req.raw.headers.get('Authorization');
       console.log(`[AUTH] Missing token for ${path}. Authorization header: ${authHeader || 'NONE'}`);
       return Errors.missingToken().toResponse();
     }
 
-    // Log token prefix for debugging (first 8 chars only for security)
     const tokenPrefix = token.substring(0, 8);
     console.log(`[AUTH] Validating token ${tokenPrefix}... for ${path}`);
 
-    let auth = await validateAccessToken(c.env.DB, token);
+    let auth = await validateAccessToken(c.env, token);
 
     // If normal token validation fails, try app service token
     if (!auth) {
       try {
         const appservice = await getAppServiceByToken(c.env.DB, token);
         if (appservice) {
-          // AS can act as its sender user or as a user specified by user_id query param
           const url = new URL(c.req.url);
           const asUserId = url.searchParams.get('user_id');
           const serverName = c.env.SERVER_NAME;
@@ -100,8 +209,6 @@ export function requireAuth() {
 
     console.log(`[AUTH] Token ${tokenPrefix}... valid for user ${auth.userId}`);
 
-
-    // Store auth context
     c.set('auth', auth);
     c.set('userId', auth.userId);
     c.set('deviceId', auth.deviceId);
@@ -117,7 +224,7 @@ export function optionalAuth() {
     const token = extractAccessToken(c.req.raw);
 
     if (token) {
-      const auth = await validateAccessToken(c.env.DB, token);
+      const auth = await validateAccessToken(c.env, token);
       if (auth) {
         c.set('auth', auth);
         c.set('userId', auth.userId);

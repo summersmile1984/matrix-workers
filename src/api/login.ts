@@ -29,21 +29,28 @@ const app = new Hono<AppEnv>();
 
 // GET /_matrix/client/v3/login - Get supported login flows
 app.get('/_matrix/client/v3/login', (c) => {
+  const flows: Array<{ type: string }> = [
+    {
+      type: 'm.login.password',
+    },
+    {
+      type: 'm.login.token',
+    },
+    {
+      type: 'm.login.application_service',
+    },
+    {
+      type: 'm.login.dummy',
+    },
+  ];
+
+  // Add SSO login flow when IDP-SERVER is configured
+  if (c.env.IDP_ISSUER_URL) {
+    flows.push({ type: 'm.login.sso' });
+  }
+
   return c.json({
-    flows: [
-      {
-        type: 'm.login.password',
-      },
-      {
-        type: 'm.login.token',
-      },
-      {
-        type: 'm.login.application_service',
-      },
-      {
-        type: 'm.login.dummy',
-      },
-    ],
+    flows,
   });
 });
 
@@ -424,6 +431,17 @@ app.post('/_matrix/client/v3/register', async (c) => {
   }
 
   if (!isAppServiceRegistration && !isGuest) {
+    // ─── Unified Identity: block direct password registration when IDP is configured ───
+    // All user creation should go through the IDP's OIDC flow, which handles
+    // user creation centrally and maps IDP sub → Matrix user_id via idp_user_links.
+    // AppService and guest registration are still allowed.
+    if (c.env.IDP_ISSUER_URL) {
+      return c.json({
+        errcode: 'M_FORBIDDEN',
+        error: 'Direct registration is disabled. Please register through the Identity Provider (OIDC/SSO).',
+      }, 403);
+    }
+
     // For non-guests, require username and password
     // Simple auth - in production, implement UIA (User-Interactive Authentication)
     if (!auth || auth.type !== 'm.login.dummy') {

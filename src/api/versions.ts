@@ -34,6 +34,14 @@ app.get('/.well-known/matrix/client', (c) => {
     },
   };
 
+  // Advertise OIDC authentication via IDP-SERVER when configured
+  if (c.env.IDP_ISSUER_URL) {
+    response['m.authentication'] = {
+      issuer: c.env.IDP_ISSUER_URL,
+      account: c.env.IDP_ISSUER_URL,
+    };
+  }
+
   // Add MatrixRTC (LiveKit) focus if configured
   if (c.env.LIVEKIT_URL && c.env.LIVEKIT_API_KEY) {
     response['org.matrix.msc4143.rtc_foci'] = [
@@ -62,12 +70,35 @@ app.get('/.well-known/matrix/server', (c) => {
 // GET /.well-known/openid-configuration - OIDC Discovery endpoint
 // This is required for Element Web OIDC-native authentication
 // See: https://spec.matrix.org/v1.17/client-server-api/#oauth-20-api
-app.get('/.well-known/openid-configuration', (c) => {
+app.get('/.well-known/openid-configuration', async (c) => {
+  const idpUrl = c.env.IDP_ISSUER_URL;
+
+  // When IDP-SERVER is configured, proxy its OIDC discovery document
+  if (idpUrl) {
+    try {
+      const resp = await fetch(`${idpUrl}/.well-known/openid-configuration`, {
+        headers: { 'Accept': 'application/json' },
+      });
+      if (resp.ok) {
+        const discovery = await resp.json() as Record<string, unknown>;
+        // Add Matrix-specific scopes if not already present
+        const scopes = (discovery.scopes_supported as string[]) || [];
+        if (!scopes.includes('urn:matrix:org.matrix.msc2967.client:api:*')) {
+          scopes.push('urn:matrix:org.matrix.msc2967.client:api:*');
+          scopes.push('urn:matrix:org.matrix.msc2967.client:device:*');
+          discovery.scopes_supported = scopes;
+        }
+        return c.json(discovery);
+      }
+    } catch (err) {
+      console.error('[OIDC] Failed to proxy discovery from IDP-SERVER:', err);
+    }
+  }
+
+  // Fallback: return local OAuth endpoints (no IDP configured)
   const serverName = c.env.SERVER_NAME;
   const baseUrl = baseUrlFor(serverName);
 
-  // Return standard OIDC discovery document
-  // Element Web requires all these fields to be present
   return c.json({
     issuer: baseUrl,
     authorization_endpoint: `${baseUrl}/oauth/authorize`,
@@ -92,7 +123,6 @@ app.get('/.well-known/openid-configuration', (c) => {
     subject_types_supported: ['public'],
     id_token_signing_alg_values_supported: ['RS256', 'ES256'],
     claims_supported: ['sub', 'iss', 'aud', 'exp', 'iat', 'name', 'email'],
-    // Matrix-specific extension
     'org.matrix.matrix-authentication-service': {
       graphql_endpoint: null,
       account: {
@@ -103,13 +133,24 @@ app.get('/.well-known/openid-configuration', (c) => {
 });
 
 // GET /.well-known/jwks.json - JSON Web Key Set for token verification
-app.get('/.well-known/jwks.json', (c) => {
-  // Return an empty JWKS - clients can't verify our tokens without keys
-  // In a real implementation, you'd generate and store RSA keys
-  // For now, returning a placeholder that indicates we use opaque tokens
-  return c.json({
-    keys: [],
-  });
+app.get('/.well-known/jwks.json', async (c) => {
+  const idpUrl = c.env.IDP_ISSUER_URL;
+
+  // When IDP-SERVER is configured, proxy its JWKS
+  if (idpUrl) {
+    try {
+      const resp = await fetch(`${idpUrl}/api/auth/jwks`, {
+        headers: { 'Accept': 'application/json' },
+      });
+      if (resp.ok) {
+        return c.json(await resp.json());
+      }
+    } catch (err) {
+      console.error('[OIDC] Failed to proxy JWKS from IDP-SERVER:', err);
+    }
+  }
+
+  return c.json({ keys: [] });
 });
 
 // GET /.well-known/matrix/support - Server support contact information
@@ -168,6 +209,9 @@ app.get('/_matrix/client/versions', (c) => {
       'v1.10',
       'v1.11',
       'v1.12',
+      'v1.13',
+      'v1.14',
+      'v1.15',
     ],
     unstable_features: {
       'org.matrix.label_based_filtering': true,

@@ -42,6 +42,9 @@ export class SyncDurableObject extends DurableObject<Env> {
   private slidingSyncStates: Map<string, SlidingSyncConnectionState> = new Map();
   // Waiting resolvers for long-polling requests
   private waitingResolvers: Array<(hasEvents: boolean) => void> = [];
+  // Flag: a notify arrived but no waiter was present to consume it
+  private pendingNotify: boolean = false;
+  private pendingNotifyTimestamp: number = 0;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -225,6 +228,11 @@ export class SyncDurableObject extends DurableObject<Env> {
     }
     if (numResolvers > 0) {
       console.log('[SyncDO] Woke up', numResolvers, 'waiting request(s)');
+    } else {
+      // No waiters present — set flag so next waiter returns immediately
+      this.pendingNotify = true;
+      this.pendingNotifyTimestamp = Date.now();
+      console.log('[SyncDO] No waiters, setting pendingNotify flag');
     }
 
     return new Response('OK');
@@ -236,7 +244,18 @@ export class SyncDurableObject extends DurableObject<Env> {
       const body = await request.json() as { timeout?: number };
       const timeout = Math.min(body.timeout || 25000, 25000); // Cap at 25s
 
-      console.log('[SyncDO] /wait-for-events started, timeout:', timeout, 'current waiters:', this.waitingResolvers.length);
+      console.log('[SyncDO] /wait-for-events started, timeout:', timeout, 'current waiters:', this.waitingResolvers.length, 'pendingNotify:', this.pendingNotify);
+
+      // Check if a notify arrived before we started waiting (race condition fix)
+      // Only consume if the notify is recent (within 30s)
+      if (this.pendingNotify && (Date.now() - this.pendingNotifyTimestamp) < 30000) {
+        this.pendingNotify = false;
+        console.log('[SyncDO] /wait-for-events returning immediately — consumed pendingNotify');
+        return new Response(JSON.stringify({ hasEvents: true }), {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      this.pendingNotify = false; // Clear stale flag
 
       let myResolver: ((hasEvents: boolean) => void) | null = null;
 
