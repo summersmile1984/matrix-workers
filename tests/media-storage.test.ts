@@ -8,7 +8,7 @@
 //
 // Run: bun test tests/media-storage.test.ts
 
-import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
+import { describe, test, expect, beforeAll, afterAll } from 'vitest';
 import { FileSystemMediaStorage } from '../src/adapters/fs-media-storage';
 import { rm } from 'node:fs/promises';
 import type { MediaStorage } from '../src/adapters/media-storage';

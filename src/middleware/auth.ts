@@ -11,6 +11,8 @@ export type AuthContext = {
   userId: string;
   deviceId: string | null;
   accessToken: string;
+  /** API scopes granted to this auth context */
+  scopes: string[];
 };
 
 // Extract access token from request
@@ -39,6 +41,101 @@ export function extractAccessToken(request: Request): string | null {
 const idpTokenCache = new Map<string, { auth: AuthContext; expiresAt: number }>();
 const IDP_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
+// Helper: resolve an IDP user from claims (JWT or userinfo) to a Matrix AuthContext
+async function resolveIdpUser(env: any, claims: Record<string, any>, token: string): Promise<AuthContext> {
+  const serverName = env.SERVER_NAME;
+  const sub = claims.sub;
+  let userId: string;
+
+  // 1. Check idp_user_links for existing sub → user_id mapping
+  const existingLink = await env.DB.prepare(
+    'SELECT user_id FROM idp_user_links WHERE external_id = ?'
+  ).bind(sub).first();
+
+  if (existingLink) {
+    userId = existingLink.user_id as string;
+    console.log(`[AUTH] Found existing IDP link: sub=${sub} → ${userId}`);
+
+    // Update last_login_at
+    await env.DB.prepare(
+      'UPDATE idp_user_links SET last_login_at = ? WHERE external_id = ?'
+    ).bind(Date.now(), sub).run();
+  } else {
+    // 2. No link found — JIT create user
+    let localpart = sub;
+    if (claims.email) {
+      localpart = claims.email.split('@')[0];
+    }
+    localpart = localpart.toLowerCase().replace(/[^a-z0-9._=-]/g, '_');
+    userId = `@${localpart}:${serverName}`;
+
+    // Create user in users table
+    try {
+      const existingUser = await env.DB.prepare(
+        'SELECT user_id FROM users WHERE user_id = ?'
+      ).bind(userId).first();
+
+      if (!existingUser) {
+        const now = Date.now();
+        await env.DB.prepare(
+          `INSERT INTO users (user_id, localpart, password_hash, display_name, avatar_url, is_guest, is_deactivated, admin, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 0, 0, 0, ?, ?)`
+        ).bind(userId, localpart, '', claims.name || claims.email || localpart, '', now, now).run();
+        console.log(`[AUTH] JIT created local user ${userId} from IDP`);
+      }
+    } catch (err) {
+      console.error('[AUTH] JIT create user error:', err);
+    }
+
+    // Create link in idp_user_links
+    try {
+      const now = Date.now();
+      await env.DB.prepare(
+        `INSERT INTO idp_user_links (provider_id, external_id, user_id, external_email, external_name, created_at, last_login_at) VALUES (?, ?, ?, ?, ?, ?, ?)`
+      ).bind('matrix-idp', sub, userId, claims.email || '', claims.name || '', now, now).run();
+      console.log(`[AUTH] Created IDP link: sub=${sub} → ${userId}`);
+    } catch (err) {
+      console.error('[AUTH] Create IDP link error:', err);
+    }
+  }
+
+  // 3. Ensure device exists for this token
+  const tokenHashBytes = new Uint8Array(
+    await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token))
+  );
+  const deviceId = 'OIDC_' + Array.from(tokenHashBytes.slice(0, 5))
+    .map(b => b.toString(16).padStart(2, '0')).join('').toUpperCase();
+
+  try {
+    const existingDevice = await env.DB.prepare(
+      'SELECT device_id FROM devices WHERE user_id = ? AND device_id = ?'
+    ).bind(userId, deviceId).first();
+
+    if (!existingDevice) {
+      await env.DB.prepare(
+        `INSERT INTO devices (user_id, device_id, display_name, created_at) VALUES (?, ?, ?, ?)`
+      ).bind(userId, deviceId, 'OIDC Login', Date.now()).run();
+      console.log(`[AUTH] Auto-created device ${deviceId} for user ${userId}`);
+    }
+  } catch (err) {
+    console.error('[AUTH] Auto-create device error:', err);
+  }
+
+  const authResult: AuthContext = {
+    userId,
+    deviceId,
+    accessToken: token,
+    scopes: ['matrix:full'],  // IDP users get full Matrix access
+  };
+
+  // Cache the result
+  idpTokenCache.set(token, {
+    auth: authResult,
+    expiresAt: Date.now() + IDP_CACHE_TTL_MS,
+  });
+
+  return authResult;
+}
+
 // Validate access token and return user info
 // Dual-mode: checks local DB first, then IDP-SERVER introspect if configured
 export async function validateAccessToken(
@@ -63,103 +160,45 @@ export async function validateAccessToken(
       userId: result.userId,
       deviceId: result.deviceId,
       accessToken: token,
+      scopes: ['matrix:full'],  // Local token users get full access
     };
   }
 
-  // 2. If IDP-SERVER is configured, try introspect
-  if (env.IDP_ISSUER_URL && env.IDP_CLIENT_ID && env.IDP_CLIENT_SECRET) {
+  // 2. If IDP-SERVER is configured, try JWKS-based JWT verification (no client_secret needed)
+  if (env.IDP_ISSUER_URL && env.IDP_CLIENT_ID) {
+    // 2a. Try JWT JWKS verification first
     try {
-      const introspectUrl = `${env.IDP_ISSUER_URL}/api/auth/oauth2/introspect`;
-      const credentials = btoa(`${env.IDP_CLIENT_ID}:${env.IDP_CLIENT_SECRET}`);
-      console.log(`[AUTH] Trying IDP introspect at ${introspectUrl}`);
-      const resp = await fetch(introspectUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          'Authorization': `Basic ${credentials}`,
-        },
-        body: `token=${encodeURIComponent(token)}`,
-      });
+      const { verifyIdpJwt } = await import('../services/idp-jwt');
+      console.log(`[AUTH] Trying IDP JWKS verification for token`);
+      const claims = await verifyIdpJwt(token, env.IDP_ISSUER_URL);
 
-      const respText = await resp.text();
-      console.log(`[AUTH] IDP introspect response: ${resp.status} ${respText.slice(0, 500)}`);
-
-      let data: { active?: boolean; sub?: string; email?: string; scope?: string } | null = null;
-      try { data = JSON.parse(respText); } catch { /* not JSON */ }
-
-      if (data?.active && data?.sub) {
-        // Derive Matrix user ID from IDP sub/email
-        const serverName = env.SERVER_NAME;
-        let localpart = data.sub;
-
-        // If sub looks like an email, use the part before @
-        if (data.email) {
-          localpart = data.email.split('@')[0];
-        }
-
-        // Sanitize for Matrix user ID
-        localpart = localpart.toLowerCase().replace(/[^a-z0-9._=-]/g, '_');
-        const userId = `@${localpart}:${serverName}`;
-
-        // Auto-create local user if not exists
-        try {
-          const existing = await env.DB.prepare(
-            'SELECT user_id FROM users WHERE user_id = ?'
-          ).bind(userId).first();
-
-          if (!existing) {
-            await env.DB.prepare(
-              `INSERT INTO users (user_id, display_name, created_at) VALUES (?, ?, ?)`
-            ).bind(userId, data.email || localpart, Date.now()).run();
-            console.log(`[AUTH] Auto-created local user ${userId} from IDP`);
-          }
-        } catch (err) {
-          // Ignore if user already exists (race condition)
-          console.error('[AUTH] Auto-create user error (may be OK):', err);
-        }
-
-        // Auto-create device for OIDC tokens (Matrix SDK requires device_id)
-        // Derive a stable device ID from the token to avoid duplicates
-        const tokenHashBytes = new Uint8Array(
-          await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token))
-        );
-        const deviceId = 'OIDC_' + Array.from(tokenHashBytes.slice(0, 5))
-          .map(b => b.toString(16).padStart(2, '0')).join('').toUpperCase();
-
-        try {
-          const existingDevice = await env.DB.prepare(
-            'SELECT device_id FROM devices WHERE user_id = ? AND device_id = ?'
-          ).bind(userId, deviceId).first();
-
-          if (!existingDevice) {
-            await env.DB.prepare(
-              `INSERT INTO devices (user_id, device_id, display_name, created_at) VALUES (?, ?, ?, ?)`
-            ).bind(userId, deviceId, 'OIDC Login', Date.now()).run();
-            console.log(`[AUTH] Auto-created device ${deviceId} for user ${userId}`);
-          }
-        } catch (err) {
-          console.error('[AUTH] Auto-create device error (may be OK):', err);
-        }
-
-        const authResult: AuthContext = {
-          userId,
-          deviceId,
-          accessToken: token,
-        };
-
-        // Cache the result to avoid IDP introspection on every request
-        idpTokenCache.set(token, {
-          auth: authResult,
-          expiresAt: Date.now() + IDP_CACHE_TTL_MS,
-        });
-
-        return authResult;
+      if (claims?.sub) {
+        return await resolveIdpUser(env, claims, token);
       }
     } catch (err) {
-      console.error('[AUTH] IDP introspect error:', err);
+      console.log('[AUTH] JWT verification failed, trying userinfo for opaque token...');
+    }
+
+    // 2b. Fallback: use IDP userinfo endpoint for opaque tokens
+    try {
+      const idpUrl = env.IDP_ISSUER_URL.replace(/\/+$/, '');
+      const userinfoResp = await fetch(`${idpUrl}/oauth2/userinfo`, {
+        headers: { 'Authorization': `Bearer ${token}` },
+      });
+      if (userinfoResp.ok) {
+        const claims = await userinfoResp.json() as Record<string, any>;
+        console.log(`[AUTH] IDP userinfo resolved user: sub=${claims.sub}, email=${claims.email}`);
+        if (claims.sub) {
+          return await resolveIdpUser(env, claims, token);
+        }
+      } else {
+        console.log(`[AUTH] IDP userinfo returned ${userinfoResp.status}`);
+      }
+    } catch (err) {
+      console.error('[AUTH] IDP userinfo error:', err);
     }
   } else {
-    console.log(`[AUTH] IDP introspect not configured. IDP_ISSUER_URL=${env.IDP_ISSUER_URL}, IDP_CLIENT_ID=${env.IDP_CLIENT_ID ? 'set' : 'unset'}, IDP_CLIENT_SECRET=${env.IDP_CLIENT_SECRET ? 'set' : 'unset'}`);
+    console.log(`[AUTH] IDP not configured. IDP_ISSUER_URL=${env.IDP_ISSUER_URL}, IDP_CLIENT_ID=${env.IDP_CLIENT_ID ? 'set' : 'unset'}`);
   }
 
   return null;
@@ -195,6 +234,7 @@ export function requireAuth() {
             userId: senderUserId,
             deviceId: null,
             accessToken: token,
+            scopes: ['matrix:full'],  // AppService users get full access
           };
         }
       } catch (asErr) {

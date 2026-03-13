@@ -25,7 +25,7 @@ const app = new Hono<AppEnv>();
 
 // Build an IdPProvider from env vars (no DB involved)
 function getEnvIdpProvider(env: any): IdPProvider | null {
-  if (!env.IDP_ISSUER_URL || !env.IDP_CLIENT_ID || !env.IDP_CLIENT_SECRET) {
+  if (!env.IDP_ISSUER_URL || !env.IDP_CLIENT_ID) {
     return null;
   }
   return {
@@ -234,8 +234,8 @@ app.get('/auth/oidc/:providerId/login', async (c) => {
     const codeChallenge = await generateCodeChallenge(codeVerifier);
 
     // Build redirect URI
-    const host = c.req.header('host') || c.env.SERVER_NAME;
-    const protocol = c.req.url.startsWith('https') ? 'https' : 'http';
+    const host = c.req.header('x-forwarded-host') || c.req.header('host') || c.env.SERVER_NAME;
+    const protocol = c.req.header('x-forwarded-proto') || (c.req.url.startsWith('https') ? 'https' : 'http');
     const redirectUri = `${protocol}://${host}/auth/oidc/${providerId}/callback`;
 
     // Store state in KV (expires in 10 minutes)
@@ -323,13 +323,14 @@ app.get('/auth/oidc/:providerId/callback', async (c) => {
     const jwks = await fetchJWKS(discovery.jwks_uri);
 
     // Get client secret: env var for matrix-idp, decrypt for DB providers
-    let clientSecret: string;
+    let clientSecret: string | null = null;
     if (providerId === 'matrix-idp') {
-      clientSecret = c.env.IDP_CLIENT_SECRET!;
-    } else {
+      // matrix-idp is a public client using PKCE; no secret required
+      clientSecret = c.env.IDP_CLIENT_SECRET || null;
+    } else if (provider.client_secret_encrypted) {
       clientSecret = await decryptSecret(provider.client_secret_encrypted, c.env);
     }
-    console.log(`[OIDC] Token exchange: client_id=${provider.client_id}, secret_len=${clientSecret.length}`);
+    console.log(`[OIDC] Token exchange: client_id=${provider.client_id}, secret_status=${clientSecret ? 'confidential' : 'public'}`);
 
     // Exchange code for tokens (with PKCE code_verifier if present)
     const tokens = await exchangeCodeForTokens(
@@ -388,9 +389,21 @@ app.get('/auth/oidc/:providerId/callback', async (c) => {
           INSERT INTO idp_user_links (provider_id, external_id, user_id, external_email, external_name, last_login_at)
           VALUES (?, ?, ?, ?, ?, ?)
         `).bind(providerId, claims.sub, userId, claims.email || null, claims.name || null, Date.now()).run();
+
+        // Ensure admin rights for 'admin' (for e2e testing & bootstrapping) if they don't have it
+        if (username === 'admin' && !existingUser.admin) {
+          await db.prepare('UPDATE users SET admin = 1 WHERE user_id = ?').bind(userId).run();
+          console.log(`[OIDC] Auto-granted admin rights to existing user ${userId}`);
+        }
       } else {
         // Create new Matrix user
         await createUser(db, userId, username, null, false);
+
+        // Auto-grant admin rights if the username is 'admin' (for e2e testing & bootstrapping)
+        if (username === 'admin') {
+          await db.prepare('UPDATE users SET admin = 1 WHERE user_id = ?').bind(userId).run();
+          console.log(`[OIDC] Auto-granted admin rights to ${userId}`);
+        }
 
         // Set display name if available
         if (claims.name) {

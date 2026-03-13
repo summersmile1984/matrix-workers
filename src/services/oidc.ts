@@ -186,7 +186,7 @@ export function buildAuthorizationUrl(
 export async function exchangeCodeForTokens(
   discovery: OIDCDiscovery,
   clientId: string,
-  clientSecret: string,
+  clientSecret: string | null,
   code: string,
   redirectUri: string,
   codeVerifier?: string
@@ -195,6 +195,7 @@ export async function exchangeCodeForTokens(
     grant_type: 'authorization_code',
     code: code,
     redirect_uri: redirectUri,
+    client_id: clientId,
   };
 
   // Add PKCE code verifier if present
@@ -202,17 +203,23 @@ export async function exchangeCodeForTokens(
     params.code_verifier = codeVerifier;
   }
 
-  // Use client_secret_basic authentication (RFC 6749 Section 2.3.1)
-  // Base64 encode client_id:client_secret for the Authorization header
-  const credentials = btoa(`${clientId}:${clientSecret}`);
-  console.log(`[OIDC] Token exchange: endpoint=${discovery.token_endpoint}, clientId=${clientId}, secretLen=${clientSecret.length}, secretPrefix=${clientSecret.substring(0, 8)}, base64Len=${credentials.length}`);
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/x-www-form-urlencoded',
+  };
+
+  // If client_secret is provided (confidential client), use Basic Auth
+  // Otherwise (public client), rely on client_id in the body + PKCE
+  if (clientSecret) {
+    const credentials = btoa(`${clientId}:${clientSecret}`);
+    headers['Authorization'] = `Basic ${credentials}`;
+    console.log(`[OIDC] Token exchange: endpoint=${discovery.token_endpoint}, clientId=${clientId}, auth=client_secret_basic`);
+  } else {
+    console.log(`[OIDC] Token exchange: endpoint=${discovery.token_endpoint}, clientId=${clientId}, auth=public_client (PKCE)`);
+  }
 
   const response = await fetch(discovery.token_endpoint, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/x-www-form-urlencoded',
-      'Authorization': `Basic ${credentials}`,
-    },
+    headers,
     body: new URLSearchParams(params).toString(),
   });
 
@@ -439,4 +446,46 @@ export function deriveUsername(claims: OIDCUserClaims, usernameClaim: string): s
   }
 
   return username;
+}
+
+/**
+ * Refresh IDP tokens using a refresh_token grant.
+ * Returns new id_token, access_token, and optionally a rotated refresh_token.
+ */
+export async function refreshIdpTokens(
+  discovery: OIDCDiscovery,
+  clientId: string,
+  clientSecret: string | null,
+  refreshToken: string,
+): Promise<OIDCTokenResponse> {
+  const params: Record<string, string> = {
+    grant_type: 'refresh_token',
+    refresh_token: refreshToken,
+    client_id: clientId,
+  };
+
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/x-www-form-urlencoded',
+  };
+
+  // If client_secret is provided (confidential client), use Basic Auth
+  if (clientSecret) {
+    const credentials = btoa(`${clientId}:${clientSecret}`);
+    headers['Authorization'] = `Basic ${credentials}`;
+  }
+
+  console.log(`[OIDC] Refreshing IDP tokens: endpoint=${discovery.token_endpoint}, clientId=${clientId}, auth=${clientSecret ? 'client_secret_basic' : 'public_client'}`);
+
+  const response = await fetch(discovery.token_endpoint, {
+    method: 'POST',
+    headers,
+    body: new URLSearchParams(params).toString(),
+  });
+
+  if (!response.ok) {
+    const error = await response.text();
+    throw new Error(`IDP token refresh failed: ${response.status} - ${error}`);
+  }
+
+  return await response.json() as OIDCTokenResponse;
 }

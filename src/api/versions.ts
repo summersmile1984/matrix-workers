@@ -76,7 +76,8 @@ app.get('/.well-known/openid-configuration', async (c) => {
   // When IDP-SERVER is configured, proxy its OIDC discovery document
   if (idpUrl) {
     try {
-      const resp = await fetch(`${idpUrl}/.well-known/openid-configuration`, {
+      const normalizedIdp = idpUrl.replace(/\/+$/, '');
+      const resp = await fetch(`${normalizedIdp}/.well-known/openid-configuration`, {
         headers: { 'Accept': 'application/json' },
       });
       if (resp.ok) {
@@ -139,7 +140,8 @@ app.get('/.well-known/jwks.json', async (c) => {
   // When IDP-SERVER is configured, proxy its JWKS
   if (idpUrl) {
     try {
-      const resp = await fetch(`${idpUrl}/api/auth/jwks`, {
+      const normalizedIdp = idpUrl.replace(/\/+$/, '');
+      const resp = await fetch(`${normalizedIdp}/jwks`, {
         headers: { 'Accept': 'application/json' },
       });
       if (resp.ok) {

@@ -9,7 +9,7 @@
 //
 // Run: LIBSQL_URL=http://localhost:8080 bun test tests/workflow.test.ts
 
-import { describe, test, expect, beforeAll } from 'bun:test';
+import { describe, test, expect, beforeAll } from 'vitest';
 import { Mastra } from '@mastra/core/mastra';
 import { LibSQLStore } from '@mastra/libsql';
 import { createWorkflow, createStep } from '@mastra/core/workflows';
@@ -71,7 +71,8 @@ const retryWorkflow = createWorkflow({
 // ── Setup ──────────────────────────────────────────────────────────────────────
 
 let mastra: Mastra;
-const LIBSQL_URL = process.env.LIBSQL_URL || 'http://localhost:8080';
+const DOMAIN = process.env.DOMAIN || 'localhost';
+const LIBSQL_URL = process.env.LIBSQL_URL || `http://127.0.0.1:8080`;
 
 beforeAll(async () => {
     const storage = new LibSQLStore({

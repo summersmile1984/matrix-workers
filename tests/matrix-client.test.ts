@@ -9,12 +9,14 @@
 //
 // Run:  bun test tests/matrix-client.test.ts
 
-import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
+import { describe, test, expect, beforeAll, afterAll } from 'vitest';
 import * as sdk from 'matrix-js-sdk';
 import crypto from 'crypto';
 
-const HOMESERVER_URL = process.env.HOMESERVER_URL || 'http://localhost:8787';
-const SERVER_NAME = process.env.SERVER_NAME || 'localhost:8787';
+const DOMAIN = process.env.DOMAIN || 'localhost';
+const HOMESERVER_URL = process.env.HOMESERVER_URL || `https://hs.${DOMAIN}`;
+const SERVER_NAME = process.env.SERVER_NAME || `hs.${DOMAIN}`;
+const TEST_PASSWORD = process.env.TEST_HS_PASSWORD || 'MatrixIdP@2026!';
 
 // Unique suffix per test run to avoid username collisions
 const RUN_ID = crypto.randomBytes(4).toString('hex');
@@ -102,7 +104,7 @@ describe('1. 用户注册 (Registration)', () => {
 
     test('registers user Alice successfully', async () => {
         const username = `alice_${RUN_ID}`;
-        const result = await registerUser(username, 'password123');
+        const result = await registerUser(username, TEST_PASSWORD);
 
         expect(result.userId).toBe(`@${username}:${SERVER_NAME}`);
         expect(result.accessToken).toBeDefined();
@@ -116,7 +118,7 @@ describe('1. 用户注册 (Registration)', () => {
 
     test('registers user Bob successfully', async () => {
         const username = `bob_${RUN_ID}`;
-        const result = await registerUser(username, 'password456');
+        const result = await registerUser(username, TEST_PASSWORD);
 
         expect(result.userId).toBe(`@${username}:${SERVER_NAME}`);
         expect(result.accessToken).toBeDefined();
@@ -129,7 +131,7 @@ describe('1. 用户注册 (Registration)', () => {
     test('rejects duplicate registration', async () => {
         const username = `alice_${RUN_ID}`;
         try {
-            await registerUser(username, 'password123');
+            await registerUser(username, TEST_PASSWORD);
             // Should not reach here
             expect(true).toBe(false);
         } catch (e: any) {
@@ -165,7 +167,7 @@ describe('2. 登录 (Login)', () => {
         const tempClient = sdk.createClient({ baseUrl: HOMESERVER_URL });
         const result = await tempClient.login('m.login.password', {
             identifier: { type: 'm.id.user', user: `alice_${RUN_ID}` },
-            password: 'password123',
+            password: TEST_PASSWORD,
         });
 
         expect(result.user_id).toBe(aliceUserId);
@@ -178,7 +180,7 @@ describe('2. 登录 (Login)', () => {
         try {
             await tempClient.login('m.login.password', {
                 identifier: { type: 'm.id.user', user: `alice_${RUN_ID}` },
-                password: 'wrong_password',
+                password: 'wrong_password_intentionally_bad',
             });
             expect(true).toBe(false); // should not reach
         } catch (e: any) {

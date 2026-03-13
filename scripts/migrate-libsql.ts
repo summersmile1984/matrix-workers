@@ -2,7 +2,7 @@
 // Uses executeMultiple() to execute each SQL file atomically.
 //
 // Usage:
-//   LIBSQL_URL=http://localhost:8080 bun run scripts/migrate-libsql.ts
+//   LIBSQL_URL=http://127.0.0.1:8080 bun run scripts/migrate-libsql.ts
 //   npm run db:migrate:libsql
 
 import { createClient } from '@libsql/client/http';

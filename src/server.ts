@@ -118,7 +118,7 @@ const env: any = {
     OIDC_ENCRYPTION_KEY: process.env.OIDC_ENCRYPTION_KEY,
     IDP_ISSUER_URL: process.env.IDP_ISSUER_URL,
     IDP_CLIENT_ID: process.env.IDP_CLIENT_ID,
-    IDP_CLIENT_SECRET: process.env.IDP_CLIENT_SECRET,
+    ENABLE_TEST_REGISTRATION: process.env.ENABLE_TEST_REGISTRATION,
     APNS_KEY_ID: process.env.APNS_KEY_ID,
     APNS_TEAM_ID: process.env.APNS_TEAM_ID,
     APNS_PRIVATE_KEY: process.env.APNS_PRIVATE_KEY,

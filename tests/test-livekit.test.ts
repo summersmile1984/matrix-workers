@@ -16,9 +16,10 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import * as sdk from 'matrix-js-sdk';
 import crypto from 'crypto';
 
-const HOMESERVER_URL = process.env.BRIDGE_HOMESERVER_URL ?? 'http://localhost:8787';
+const DOMAIN = process.env.DOMAIN || 'localhost';
+const HOMESERVER_URL = process.env.BRIDGE_HOMESERVER_URL ?? `https://hs.${DOMAIN}`;
 const username = `testuser_${crypto.randomBytes(4).toString('hex')}`;
-const password = 'password123';
+const password = process.env.TEST_HS_PASSWORD || 'MatrixIdP@2026!';
 
 let client: sdk.MatrixClient;
 let accessToken: string;
@@ -87,7 +88,7 @@ describe('LiveKit RTC Transports', () => {
                 openid_token: {
                     access_token: `mock_openid_token_${Date.now()}`,
                     token_type: 'Bearer',
-                    matrix_server_name: 'localhost:8787',
+                    matrix_server_name: `hs.${DOMAIN}`,
                     expires_in: 3600,
                 },
             }),

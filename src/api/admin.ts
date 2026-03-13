@@ -9,7 +9,7 @@ import { getUserById } from '../services/database';
 import { generateLoginToken, generateOpaqueId } from '../utils/ids';
 import { hashToken } from '../utils/crypto';
 import { encryptSecret } from './oidc-auth';
-import { fetchOIDCDiscovery } from '../services/oidc';
+import { fetchOIDCDiscovery, refreshIdpTokens, decodeJWT } from '../services/oidc';
 
 const app = new Hono<AppEnv>();
 
@@ -397,6 +397,84 @@ app.put('/admin/api/users/:userId/idp-link', requireAuth(), requireAdmin, async 
   } catch (err: any) {
     console.error('[admin] PUT idp-link error:', err);
     return c.json({ errcode: 'M_UNKNOWN', error: err?.message || 'Failed to upsert IDP link' }, 500);
+  }
+});
+
+// GET /admin/api/users/:userId/idp-token - Get user's IDP JWT for on-behalf-of identity
+// Returns the user's IDP id_token, auto-refreshing if expired.
+// Used by the bridge to call agent servers with the real user's identity.
+app.get('/admin/api/users/:userId/idp-token', requireAuth(), requireAdmin, async (c) => {
+  const userId = decodeURIComponent(c.req.param('userId'));
+
+  const tokensJson = await c.env.SESSIONS.get(`idp_tokens:${userId}`);
+  if (!tokensJson) {
+    return c.json({ available: false, reason: 'no_tokens' }, 404);
+  }
+
+  const tokens = JSON.parse(tokensJson) as {
+    id_token: string;
+    access_token: string;
+    refresh_token: string | null;
+    provider_id: string;
+    client_id: string;
+    issuer_url: string;
+    updated_at: number;
+  };
+
+  // Check if id_token is expired
+  try {
+    const { payload } = decodeJWT(tokens.id_token);
+    const isExpired = payload.exp && payload.exp < Date.now() / 1000;
+
+    if (isExpired) {
+      if (!tokens.refresh_token) {
+        return c.json({ available: false, reason: 'expired_no_refresh' }, 410);
+      }
+
+      console.log(`[admin] IDP token expired for ${userId}, refreshing...`);
+
+      // Resolve client secret: null for matrix-idp (public client), decrypt for DB providers
+      let clientSecret: string | null;
+      if (tokens.provider_id === 'matrix-idp') {
+        clientSecret = null; // Public client — uses PKCE, no secret needed
+      } else {
+        // Look up provider from DB and decrypt secret
+        const provider = await c.env.DB.prepare(
+          'SELECT client_secret_encrypted FROM idp_providers WHERE id = ?'
+        ).bind(tokens.provider_id).first<{ client_secret_encrypted: string }>();
+        if (!provider) {
+          return c.json({ available: false, reason: 'provider_not_found' }, 410);
+        }
+        const { decryptSecret } = await import('./oidc-auth');
+        clientSecret = await decryptSecret(provider.client_secret_encrypted, c.env);
+      }
+
+      // Refresh tokens from IDP
+      const discovery = await fetchOIDCDiscovery(tokens.issuer_url);
+      const refreshed = await refreshIdpTokens(
+        discovery, tokens.client_id, clientSecret, tokens.refresh_token
+      );
+
+      // Update stored tokens
+      const updated = {
+        ...tokens,
+        id_token: refreshed.id_token,
+        access_token: refreshed.access_token,
+        refresh_token: refreshed.refresh_token ?? tokens.refresh_token,
+        updated_at: Date.now(),
+      };
+      await c.env.SESSIONS.put(`idp_tokens:${userId}`, JSON.stringify(updated), {
+        expirationTtl: 30 * 24 * 60 * 60,
+      });
+
+      console.log(`[admin] IDP token refreshed for ${userId}`);
+      return c.json({ available: true, id_token: refreshed.id_token });
+    }
+
+    return c.json({ available: true, id_token: tokens.id_token });
+  } catch (err: any) {
+    console.error(`[admin] IDP token error for ${userId}:`, err?.message || err);
+    return c.json({ available: false, reason: 'error', error: err?.message }, 500);
   }
 });
 
