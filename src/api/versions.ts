@@ -35,10 +35,10 @@ app.get('/.well-known/matrix/client', (c) => {
   };
 
   // Advertise OIDC authentication via IDP-SERVER when configured
-  if (c.env.IDP_ISSUER_URL) {
+  if (c.env.IDP_ISSUER) {
     response['m.authentication'] = {
-      issuer: c.env.IDP_ISSUER_URL,
-      account: c.env.IDP_ISSUER_URL,
+      issuer: c.env.IDP_ISSUER,
+      account: c.env.IDP_ISSUER,
     };
   }
 
@@ -71,7 +71,7 @@ app.get('/.well-known/matrix/server', (c) => {
 // This is required for Element Web OIDC-native authentication
 // See: https://spec.matrix.org/v1.17/client-server-api/#oauth-20-api
 app.get('/.well-known/openid-configuration', async (c) => {
-  const idpUrl = c.env.IDP_ISSUER_URL;
+  const idpUrl = c.env.IDP_ISSUER;
 
   // When IDP-SERVER is configured, proxy its OIDC discovery document
   if (idpUrl) {
@@ -135,7 +135,7 @@ app.get('/.well-known/openid-configuration', async (c) => {
 
 // GET /.well-known/jwks.json - JSON Web Key Set for token verification
 app.get('/.well-known/jwks.json', async (c) => {
-  const idpUrl = c.env.IDP_ISSUER_URL;
+  const idpUrl = c.env.IDP_ISSUER;
 
   // When IDP-SERVER is configured, proxy its JWKS
   if (idpUrl) {

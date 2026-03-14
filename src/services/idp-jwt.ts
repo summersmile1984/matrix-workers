@@ -140,8 +140,7 @@ export async function verifyIdpJwt(
             return null;
         }
 
-        // Validate issuer — accept both with and without trailing slash,
-        // and the /api/auth variant that Better Auth uses
+        // Validate issuer — accept both with and without trailing slash
         const normalizedIssuer = idpIssuerUrl.replace(/\/$/, '');
         const baseUrl = new URL(idpIssuerUrl).origin;
         const acceptedIssuers = [
@@ -149,8 +148,6 @@ export async function verifyIdpJwt(
             normalizedIssuer + '/',
             baseUrl,
             baseUrl + '/',
-            baseUrl + '/api/auth',
-            baseUrl + '/api/auth/',
         ];
 
         if (!acceptedIssuers.includes(payload.iss)) {

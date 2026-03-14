@@ -165,12 +165,12 @@ export async function validateAccessToken(
   }
 
   // 2. If IDP-SERVER is configured, try JWKS-based JWT verification (no client_secret needed)
-  if (env.IDP_ISSUER_URL && env.IDP_CLIENT_ID) {
+  if (env.IDP_ISSUER && env.HS_IDP_CLIENT_ID) {
     // 2a. Try JWT JWKS verification first
     try {
       const { verifyIdpJwt } = await import('../services/idp-jwt');
       console.log(`[AUTH] Trying IDP JWKS verification for token`);
-      const claims = await verifyIdpJwt(token, env.IDP_ISSUER_URL);
+      const claims = await verifyIdpJwt(token, env.IDP_ISSUER);
 
       if (claims?.sub) {
         return await resolveIdpUser(env, claims, token);
@@ -181,7 +181,7 @@ export async function validateAccessToken(
 
     // 2b. Fallback: use IDP userinfo endpoint for opaque tokens
     try {
-      const idpUrl = env.IDP_ISSUER_URL.replace(/\/+$/, '');
+      const idpUrl = env.IDP_ISSUER.replace(/\/+$/, '');
       const userinfoResp = await fetch(`${idpUrl}/oauth2/userinfo`, {
         headers: { 'Authorization': `Bearer ${token}` },
       });
@@ -198,7 +198,7 @@ export async function validateAccessToken(
       console.error('[AUTH] IDP userinfo error:', err);
     }
   } else {
-    console.log(`[AUTH] IDP not configured. IDP_ISSUER_URL=${env.IDP_ISSUER_URL}, IDP_CLIENT_ID=${env.IDP_CLIENT_ID ? 'set' : 'unset'}`);
+    console.log(`[AUTH] IDP not configured. IDP_ISSUER=${env.IDP_ISSUER}, HS_IDP_CLIENT_ID=${env.HS_IDP_CLIENT_ID ? 'set' : 'unset'}`);
   }
 
   return null;

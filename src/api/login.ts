@@ -45,7 +45,7 @@ app.get('/_matrix/client/v3/login', (c) => {
   ];
 
   // Add SSO login flow when IDP-SERVER is configured
-  if (c.env.IDP_ISSUER_URL) {
+  if (c.env.IDP_ISSUER) {
     flows.push({ type: 'm.login.sso' });
   }
 
@@ -435,7 +435,7 @@ app.post('/_matrix/client/v3/register', async (c) => {
     // All user creation should go through the IDP's OIDC flow, which handles
     // user creation centrally and maps IDP sub → Matrix user_id via idp_user_links.
     // AppService and guest registration are still allowed.
-    if (c.env.IDP_ISSUER_URL && c.env.ENABLE_TEST_REGISTRATION !== 'true') {
+    if (c.env.IDP_ISSUER && c.env.ENABLE_TEST_REGISTRATION !== 'true') {
       return c.json({
         errcode: 'M_FORBIDDEN',
         error: 'Direct registration is disabled. Please register through the Identity Provider (OIDC/SSO).',

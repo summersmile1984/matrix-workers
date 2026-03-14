@@ -49,8 +49,8 @@ export interface Env {
   ENABLE_TEST_REGISTRATION?: string;
 
   // IDP-SERVER (external IdP for SSO login)
-  IDP_ISSUER_URL?: string;       // e.g. http://localhost:4000
-  IDP_CLIENT_ID?: string;        // OAuth client ID registered in IDP-SERVER
+  IDP_ISSUER?: string;       // e.g. http://localhost:4000
+  HS_IDP_CLIENT_ID?: string;        // OAuth client ID registered in IDP-SERVER
 
   // Cloudflare TURN Server Configuration
   TURN_KEY_ID?: string;

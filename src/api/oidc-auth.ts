@@ -25,14 +25,14 @@ const app = new Hono<AppEnv>();
 
 // Build an IdPProvider from env vars (no DB involved)
 function getEnvIdpProvider(env: any): IdPProvider | null {
-  if (!env.IDP_ISSUER_URL || !env.IDP_CLIENT_ID) {
+  if (!env.IDP_ISSUER || !env.HS_IDP_CLIENT_ID) {
     return null;
   }
   return {
     id: 'matrix-idp',
-    name: 'Matrix IdP',
-    issuer_url: env.IDP_ISSUER_URL,
-    client_id: env.IDP_CLIENT_ID,
+    name: 'TuringFlow',
+    issuer_url: env.IDP_ISSUER,
+    client_id: env.HS_IDP_CLIENT_ID,
     client_secret_encrypted: '', // not used — secret comes from env
     scopes: 'openid profile email',
     enabled: 1,
@@ -530,7 +530,7 @@ Device ID: ${deviceId}\`;
 // Returns information about supported authentication methods (MSC2965 / Matrix v1.17)
 // This is the STABLE endpoint as of Matrix v1.17
 app.get('/_matrix/client/v1/auth_metadata', async (c) => {
-  const idpUrl = c.env.IDP_ISSUER_URL;
+  const idpUrl = c.env.IDP_ISSUER;
 
   // When IDP-SERVER is configured, build auth metadata from IDP discovery
   if (idpUrl) {
