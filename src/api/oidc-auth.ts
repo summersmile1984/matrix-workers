@@ -333,14 +333,20 @@ app.get('/auth/oidc/:providerId/callback', async (c) => {
     console.log(`[OIDC] Token exchange: client_id=${provider.client_id}, secret_status=${clientSecret ? 'confidential' : 'public'}`);
 
     // Exchange code for tokens (with PKCE code_verifier if present)
+    // Build the resource indicator for RFC 8707 — tells IDP to issue JWT access_token
+    // The resource should be the agent server URL so the JWT audience matches
+    const resourceIndicator = `https://agent.${c.env.SERVER_NAME?.replace(/^hs\./, '') || 'localhost'}`;
+
     const tokens = await exchangeCodeForTokens(
       discovery,
       provider.client_id,
       clientSecret,
       code,
       stateData.redirectUri,
-      stateData.codeVerifier
+      stateData.codeVerifier,
+      resourceIndicator,
     );
+    console.log(`[OIDC] Token exchange complete, resource=${resourceIndicator}`);
 
     // Validate ID token and extract claims
     // Use discovery.issuer (the actual issuer from the discovery doc) for validation,
@@ -352,6 +358,23 @@ app.get('/auth/oidc/:providerId/callback', async (c) => {
       stateData.nonce,
       jwks
     );
+
+    // Ensure the env-based IDP provider exists in idp_providers (for FK constraint)
+    // When the provider comes from env vars (e.g. matrix-idp), it's not stored in the DB,
+    // but idp_user_links.provider_id has a FOREIGN KEY to idp_providers(id).
+    if (providerId === 'matrix-idp') {
+      await db.prepare(`
+        INSERT OR IGNORE INTO idp_providers (id, name, issuer_url, client_id, client_secret_encrypted, scopes, enabled, auto_create_users, username_claim, display_order)
+        VALUES (?, ?, ?, ?, '', ?, 1, 1, ?, 0)
+      `).bind(
+        'matrix-idp',
+        provider.name,
+        provider.issuer_url,
+        provider.client_id,
+        provider.scopes,
+        provider.username_claim
+      ).run();
+    }
 
     // Check if user link exists
     let userLink = await db.prepare(`
@@ -429,11 +452,55 @@ app.get('/auth/oidc/:providerId/callback', async (c) => {
     const tokenId = await generateOpaqueId(16);
     await createAccessToken(db, tokenId, tokenHash, userId, deviceId);
 
-    // If returnTo is set (e.g. /admin), redirect with token in URL fragment
-    // The fragment is never sent to the server, keeping the token client-side only
+    // Store IDP tokens in SESSIONS KV for on-behalf-of auth (bridge → agent server)
+    // The bridge can later retrieve these via GET /admin/api/users/:userId/idp-token
+    await c.env.SESSIONS.put(`idp_tokens:${userId}`, JSON.stringify({
+      id_token: tokens.id_token,
+      access_token: tokens.access_token,
+      refresh_token: tokens.refresh_token ?? null,
+      provider_id: providerId,
+      client_id: provider.client_id,
+      issuer_url: provider.issuer_url,
+      updated_at: Date.now(),
+    }), {
+      expirationTtl: 30 * 24 * 60 * 60, // 30 days
+    });
+    console.log(`[OIDC] IDP tokens stored for ${userId} (on-behalf-of auth)`);
+
+    // If returnTo is set, redirect with appropriate token format
     if (stateData.returnTo) {
+      const returnToUrl = stateData.returnTo;
+      
+      // Check if returnTo is a custom scheme (e.g. com.aotsea://login) — SSO login flow
+      // In this case, generate a short-lived loginToken per Matrix spec
+      if (!returnToUrl.startsWith('http://') && !returnToUrl.startsWith('https://') && !returnToUrl.startsWith('/')) {
+        // SSO login redirect: generate a loginToken (short-lived, one-time use)
+        const loginTokenBytes = crypto.getRandomValues(new Uint8Array(32));
+        const loginToken = btoa(String.fromCharCode(...loginTokenBytes))
+          .replace(/\+/g, '-')
+          .replace(/\//g, '_')
+          .replace(/=/g, '');
+        
+        const loginTokenHash = await hashToken(loginToken);
+        await c.env.SESSIONS.put(
+          `login_token:${loginTokenHash}`,
+          JSON.stringify({
+            user_id: userId,
+            expires_at: Date.now() + 2 * 60 * 1000, // 2 minutes
+          }),
+          { expirationTtl: 120 }
+        );
+        
+        // Redirect to client with loginToken as query parameter
+        const separator = returnToUrl.includes('?') ? '&' : '?';
+        console.log(`[SSO] Redirecting to client with loginToken: ${returnToUrl}`);
+        return c.redirect(`${returnToUrl}${separator}loginToken=${encodeURIComponent(loginToken)}`);
+      }
+      
+      // HTTP/relative returnTo (e.g. /admin) — redirect with token in URL fragment
+      // The fragment is never sent to the server, keeping the token client-side only
       const fragment = `sso_token=${encodeURIComponent(accessToken)}&sso_user_id=${encodeURIComponent(userId)}&sso_device_id=${encodeURIComponent(deviceId)}`;
-      return c.redirect(`${stateData.returnTo}#${fragment}`);
+      return c.redirect(`${returnToUrl}#${fragment}`);
     }
 
     // Otherwise show the success page with credentials
@@ -525,6 +592,71 @@ Device ID: ${deviceId}\`;
 </body>
 </html>`;
 }
+
+// GET /_matrix/client/v3/login/sso/redirect - SSO Login Redirect
+// Per Matrix spec: redirects the user to the SSO provider for login.
+// The client passes a `redirectUrl` where the user should be sent after login.
+// We redirect to our OIDC flow which will eventually redirect back with a loginToken.
+app.get('/_matrix/client/v3/login/sso/redirect', async (c) => {
+  const redirectUrl = c.req.query('redirectUrl');
+  if (!redirectUrl) {
+    return c.json({ errcode: 'M_MISSING_PARAM', error: 'Missing redirectUrl parameter' }, 400);
+  }
+
+  // Check if IDP is configured
+  const provider = getEnvIdpProvider(c.env);
+  if (!provider) {
+    return c.json({ errcode: 'M_UNKNOWN', error: 'No SSO provider configured' }, 501);
+  }
+
+  try {
+    // Fetch OIDC discovery
+    const discovery = await fetchOIDCDiscovery(provider.issuer_url);
+
+    // Generate state and nonce
+    const state = generateRandomString(32);
+    const nonce = generateRandomString(32);
+
+    // Generate PKCE
+    const codeVerifier = generateCodeVerifier();
+    const codeChallenge = await generateCodeChallenge(codeVerifier);
+
+    // Build our callback URI on the homeserver
+    const host = c.req.header('x-forwarded-host') || c.req.header('host') || c.env.SERVER_NAME;
+    const protocol = c.req.header('x-forwarded-proto') || (c.req.url.startsWith('https') ? 'https' : 'http');
+    const callbackUri = `${protocol}://${host}/auth/oidc/${provider.id}/callback`;
+
+    // Store state in KV, including the client's redirectUrl as returnTo
+    const stateData: OAuthState = {
+      providerId: provider.id,
+      nonce,
+      redirectUri: callbackUri,
+      returnTo: redirectUrl, // The client's redirect URL — will get sso_token fragment
+      codeVerifier,
+    };
+    await c.env.SESSIONS.put(`oidc_state:${state}`, JSON.stringify(stateData), {
+      expirationTtl: 600,
+    });
+
+    // Build authorization URL and redirect to IDP
+    const authUrl = buildAuthorizationUrl(
+      discovery,
+      provider.client_id,
+      callbackUri,
+      provider.scopes,
+      state,
+      nonce,
+      codeChallenge,
+      'S256'
+    );
+
+    console.log('[SSO] Redirecting to IDP for login, redirectUrl:', redirectUrl);
+    return c.redirect(authUrl);
+  } catch (err) {
+    console.error('[SSO] Failed to initiate SSO login:', err);
+    return c.json({ errcode: 'M_UNKNOWN', error: 'Failed to initiate SSO login' }, 500);
+  }
+});
 
 // GET /_matrix/client/v1/auth_metadata - Get authentication metadata
 // Returns information about supported authentication methods (MSC2965 / Matrix v1.17)

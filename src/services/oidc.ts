@@ -189,7 +189,8 @@ export async function exchangeCodeForTokens(
   clientSecret: string | null,
   code: string,
   redirectUri: string,
-  codeVerifier?: string
+  codeVerifier?: string,
+  resource?: string,
 ): Promise<OIDCTokenResponse> {
   const params: Record<string, string> = {
     grant_type: 'authorization_code',
@@ -201,6 +202,11 @@ export async function exchangeCodeForTokens(
   // Add PKCE code verifier if present
   if (codeVerifier) {
     params.code_verifier = codeVerifier;
+  }
+
+  // RFC 8707: resource indicator — tells the IDP to issue a JWT access_token
+  if (resource) {
+    params.resource = resource;
   }
 
   const headers: Record<string, string> = {
@@ -457,12 +463,18 @@ export async function refreshIdpTokens(
   clientId: string,
   clientSecret: string | null,
   refreshToken: string,
+  resource?: string,
 ): Promise<OIDCTokenResponse> {
   const params: Record<string, string> = {
     grant_type: 'refresh_token',
     refresh_token: refreshToken,
     client_id: clientId,
   };
+
+  // RFC 8707: resource indicator — ensures refreshed access_token is a JWT
+  if (resource) {
+    params.resource = resource;
+  }
 
   const headers: Record<string, string> = {
     'Content-Type': 'application/x-www-form-urlencoded',

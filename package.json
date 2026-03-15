@@ -4,7 +4,7 @@
   "description": "Matrix homeserver running on Cloudflare Workers",
   "type": "module",
   "scripts": {
-    "dev": "NODE_TLS_REJECT_UNAUTHORIZED=0 LIBSQL_URL=http://localhost:8080 bun run src/preload.ts",
+    "dev": "NODE_EXTRA_CA_CERTS=./../.certs/caddy-root-ca.crt LIBSQL_URL=http://localhost:8080 bun run src/preload.ts",
     "dev:cf": "wrangler dev",
     "deploy": "wrangler deploy",
     "db:migrate": "wrangler d1 execute tuwunel-db --file=./migrations/schema.sql",
@@ -12,7 +12,8 @@
     "start": "bun run src/preload.ts",
     "db:migrate:libsql": "bun run scripts/migrate-libsql.ts",
     "db:push": "bun run scripts/migrate-libsql.ts",
-    "db:setup": "npm run db:push",
+    "db:seed": "bun run scripts/seed.ts",
+    "db:setup": "npm run db:push && npm run db:seed",
     "test": "vitest",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src/",

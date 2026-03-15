@@ -400,8 +400,8 @@ app.put('/admin/api/users/:userId/idp-link', requireAuth(), requireAdmin, async 
   }
 });
 
-// GET /admin/api/users/:userId/idp-token - Get user's IDP JWT for on-behalf-of identity
-// Returns the user's IDP id_token, auto-refreshing if expired.
+// GET /admin/api/users/:userId/idp-token - Get user's IDP JWT access_token for on-behalf-of identity
+// Returns the user's IDP access_token (JWT), auto-refreshing if expired.
 // Used by the bridge to call agent servers with the real user's identity.
 app.get('/admin/api/users/:userId/idp-token', requireAuth(), requireAdmin, async (c) => {
   const userId = decodeURIComponent(c.req.param('userId'));
@@ -421,9 +421,9 @@ app.get('/admin/api/users/:userId/idp-token', requireAuth(), requireAdmin, async
     updated_at: number;
   };
 
-  // Check if id_token is expired
+  // Check if access_token (JWT) is expired
   try {
-    const { payload } = decodeJWT(tokens.id_token);
+    const { payload } = decodeJWT(tokens.access_token);
     const isExpired = payload.exp && payload.exp < Date.now() / 1000;
 
     if (isExpired) {
@@ -431,7 +431,7 @@ app.get('/admin/api/users/:userId/idp-token', requireAuth(), requireAdmin, async
         return c.json({ available: false, reason: 'expired_no_refresh' }, 410);
       }
 
-      console.log(`[admin] IDP token expired for ${userId}, refreshing...`);
+      console.log(`[admin] IDP access_token expired for ${userId}, refreshing...`);
 
       // Resolve client secret: null for matrix-idp (public client), decrypt for DB providers
       let clientSecret: string | null;
@@ -449,10 +449,11 @@ app.get('/admin/api/users/:userId/idp-token', requireAuth(), requireAdmin, async
         clientSecret = await decryptSecret(provider.client_secret_encrypted, c.env);
       }
 
-      // Refresh tokens from IDP
+      // Refresh tokens from IDP (with resource to get JWT access_token)
       const discovery = await fetchOIDCDiscovery(tokens.issuer_url);
+      const resourceIndicator = `https://agent.${c.env.SERVER_NAME?.replace(/^hs\./, '') || 'localhost'}`;
       const refreshed = await refreshIdpTokens(
-        discovery, tokens.client_id, clientSecret, tokens.refresh_token
+        discovery, tokens.client_id, clientSecret, tokens.refresh_token, resourceIndicator
       );
 
       // Update stored tokens
@@ -467,11 +468,11 @@ app.get('/admin/api/users/:userId/idp-token', requireAuth(), requireAdmin, async
         expirationTtl: 30 * 24 * 60 * 60,
       });
 
-      console.log(`[admin] IDP token refreshed for ${userId}`);
-      return c.json({ available: true, id_token: refreshed.id_token });
+      console.log(`[admin] IDP access_token refreshed for ${userId}`);
+      return c.json({ available: true, access_token: refreshed.access_token });
     }
 
-    return c.json({ available: true, id_token: tokens.id_token });
+    return c.json({ available: true, access_token: tokens.access_token });
   } catch (err: any) {
     console.error(`[admin] IDP token error for ${userId}:`, err?.message || err);
     return c.json({ available: false, reason: 'error', error: err?.message }, 500);
